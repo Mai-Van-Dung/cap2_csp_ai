@@ -3,6 +3,7 @@ import MainLayout from './layouts/MainLayout'
 import LiveMonitor from './pages/LiveMonitor'
 import PlaceholderPage from './pages/PlaceholderPage'
 import UserManagementPage from './pages/UserManagementPage'
+import ZoneConfig from './pages/ZoneConfig'
 
 export default function App() {
   return (
@@ -19,15 +20,7 @@ export default function App() {
             />
           }
         />
-        <Route
-          path="zone-config"
-          element={
-            <PlaceholderPage
-              title="Zone Config"
-              description="ROI drawing tools and safety zone configuration will be managed in this section."
-            />
-          }
-        />
+        <Route path="zone-config" element={<ZoneConfig />} />
         <Route
           path="ai-settings"
           element={
