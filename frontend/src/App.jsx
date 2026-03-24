@@ -1,9 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import MainLayout from './layouts/MainLayout'
-import LiveMonitor from './pages/LiveMonitor'
-import PlaceholderPage from './pages/PlaceholderPage'
-import UserManagementPage from './pages/UserManagementPage'
-import ZoneConfig from './pages/ZoneConfig'
+import LiveMonitor from './features/admin/components/LiveMonitor.jsx'
+import PlaceholderPage from './features/admin/components/PlaceholderPage.jsx'
+import UserManagementPage from './features/admin/components/UserManagementPage.jsx'
+import ZoneConfig from './features/admin/components/ZoneConfig.jsx'
 
 export default function App() {
   return (
