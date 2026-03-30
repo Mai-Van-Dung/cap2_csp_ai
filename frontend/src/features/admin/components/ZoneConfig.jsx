@@ -1,5 +1,6 @@
 import { Minus, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { loadZoneConfig, saveZoneConfig } from '../api/zone_service'
 
 const LIVE_STREAM_URL = 'http://localhost:5000/video_feed'
 
@@ -36,6 +37,9 @@ export default function ZoneConfig() {
   const [zones, setZones] = useState(() => createDefaultZones())
   const [activeZoneId, setActiveZoneId] = useState('DPZ-01')
   const [isEditMode, setIsEditMode] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [apiNotice, setApiNotice] = useState('')
+  const [apiError, setApiError] = useState('')
 
   const [detectionSensitivity, setDetectionSensitivity] = useState(0.75)
   const [minimumChildHeight, setMinimumChildHeight] = useState(50)
@@ -50,6 +54,47 @@ export default function ZoneConfig() {
   const [dragIndex, setDragIndex] = useState(null)
 
   const overlayRef = useRef(null)
+  const cameraId = 1
+
+  const normalizeVerticesForSave = (points) =>
+    points.map((p) => [clamp01(Number(p.x) || 0), clamp01(Number(p.y) || 0)])
+
+  const normalizeVerticesFromDb = (points = []) =>
+    points
+      .map((p) => {
+        if (Array.isArray(p) && p.length >= 2) {
+          return { x: clamp01(Number(p[0]) || 0), y: clamp01(Number(p[1]) || 0) }
+        }
+        if (p && typeof p === 'object') {
+          return { x: clamp01(Number(p.x) || 0), y: clamp01(Number(p.y) || 0) }
+        }
+        return null
+      })
+      .filter(Boolean)
+
+  useEffect(() => {
+    const initZones = async () => {
+      try {
+        const dbZones = await loadZoneConfig(cameraId)
+        if (!dbZones.length) return
+
+        const mapped = dbZones.map((z) => ({
+          id: z.id,
+          name: z.zone_name || z.name || z.id,
+          vertices: normalizeVerticesFromDb(z.coordinates),
+        }))
+
+        setZones(mapped)
+        setActiveZoneId(mapped[0]?.id || 'DPZ-01')
+        setMinimumChildHeight(Number(dbZones[0]?.min_child_height ?? 50))
+        setDetectionSensitivity(Number(dbZones[0]?.sensitivity ?? 0.75))
+      } catch (error) {
+        setApiError(error?.message || 'Khong tai duoc zone tu server')
+      }
+    }
+
+    initZones()
+  }, [])
 
   const activeZone = useMemo(() => zones.find((z) => z.id === activeZoneId) || null, [zones, activeZoneId])
   const vertices = activeZone?.vertices || []
@@ -152,6 +197,38 @@ export default function ZoneConfig() {
     setSendTelegramAlert(true)
     setActivateSiren(false)
     setLogEvent(false)
+    setApiNotice('')
+    setApiError('')
+  }
+
+  const handleSaveConfiguration = async () => {
+    try {
+      setIsSaving(true)
+      setApiError('')
+      setApiNotice('')
+
+      const payloadZones = zones.map((z) => ({
+        id: z.id,
+        name: z.name,
+        vertices: normalizeVerticesForSave(z.vertices),
+      }))
+
+      const result = await saveZoneConfig(cameraId, payloadZones, {
+        min_child_height: minimumChildHeight,
+        sensitivity: detectionSensitivity,
+      })
+
+      if (result?.status === 'success') {
+        setApiNotice('Da luu zone configuration thanh cong')
+        setIsEditMode(false)
+      } else {
+        setApiError(result?.message || 'Luu zone that bai')
+      }
+    } catch (error) {
+      setApiError(error?.message || 'Luu zone that bai')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -275,6 +352,9 @@ export default function ZoneConfig() {
       <aside className="xl:col-span-3">
         <div className="flex h-full flex-col rounded-xl border border-white/10 bg-[#1B2639] p-4">
           <h3 className="text-lg font-semibold text-slate-100">CONFIGURATION TOOLS</h3>
+
+          {!!apiError && <p className="mt-3 rounded-md border border-red-400/40 bg-red-500/15 px-3 py-2 text-xs text-red-200">{apiError}</p>}
+          {!!apiNotice && <p className="mt-3 rounded-md border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-xs text-emerald-200">{apiNotice}</p>}
 
           <div className="mt-4 space-y-5">
             <div>
@@ -463,9 +543,11 @@ export default function ZoneConfig() {
             <div className="flex gap-2">
               <button
                 type="button"
+                onClick={handleSaveConfiguration}
+                disabled={isSaving}
                 className="inline-flex h-10 flex-1 items-center justify-center rounded-md bg-emerald-500 px-3 text-xs font-semibold uppercase tracking-wider text-white hover:bg-emerald-400"
               >
-                SAVE CONFIGURATION
+                {isSaving ? 'SAVING...' : 'SAVE CONFIGURATION'}
               </button>
 
               <button
