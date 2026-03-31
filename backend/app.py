@@ -6,11 +6,12 @@ from urllib.parse import quote
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
-import camera_service as cs
-import zone_service
 
 BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+import camera_service as cs
+import zone_service
 
 # --- CẤU HÌNH THÔNG SỐ CAMERA ---
 # Bạn có thể thay đổi trực tiếp ở đây hoặc dùng biến môi trường
@@ -82,10 +83,10 @@ def save_config():
                 "message": "camera_id is required"
             }), 400
         
-        if not zones:
+        if not isinstance(zones, list):
             return jsonify({
                 "status": "error",
-                "message": "zones array is required"
+                "message": "zones must be an array"
             }), 400
         
         result = zone_service.save_zone_config(camera_id, zones, settings)

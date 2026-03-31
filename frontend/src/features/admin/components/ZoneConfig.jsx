@@ -7,23 +7,7 @@ const LIVE_STREAM_URL = 'http://localhost:5000/video_feed'
 const GAUGE_ARC = 157.08
 const clamp01 = (n) => Math.max(0, Math.min(1, n))
 
-const createDefaultZones = () => [
-  {
-    id: 'DPZ-01',
-    name: 'Pool Perimeter',
-    vertices: [
-      { x: 0.18, y: 0.57 },
-      { x: 0.28, y: 0.35 },
-      { x: 0.49, y: 0.23 },
-      { x: 0.66, y: 0.24 },
-      { x: 0.8, y: 0.37 },
-      { x: 0.76, y: 0.56 },
-      { x: 0.6, y: 0.7 },
-      { x: 0.41, y: 0.74 },
-      { x: 0.24, y: 0.69 },
-    ],
-  },
-]
+const createDefaultZones = () => []
 
 const getNextZoneId = (zones) => {
   const max = zones.reduce((acc, zone) => {
@@ -35,7 +19,7 @@ const getNextZoneId = (zones) => {
 
 export default function ZoneConfig() {
   const [zones, setZones] = useState(() => createDefaultZones())
-  const [activeZoneId, setActiveZoneId] = useState('DPZ-01')
+  const [activeZoneId, setActiveZoneId] = useState('')
   const [isEditMode, setIsEditMode] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [apiNotice, setApiNotice] = useState('')
@@ -85,7 +69,7 @@ export default function ZoneConfig() {
         }))
 
         setZones(mapped)
-        setActiveZoneId(mapped[0]?.id || 'DPZ-01')
+        setActiveZoneId(mapped[0]?.id || '')
         setMinimumChildHeight(Number(dbZones[0]?.min_child_height ?? 50))
         setDetectionSensitivity(Number(dbZones[0]?.sensitivity ?? 0.75))
       } catch (error) {
@@ -177,9 +161,8 @@ export default function ZoneConfig() {
   const handleDeleteZone = (zoneId) => {
     const next = zones.filter((z) => z.id !== zoneId)
     if (next.length === 0) {
-      const fallback = { id: 'DPZ-01', name: 'Pool Perimeter', vertices: [] }
-      setZones([fallback])
-      setActiveZoneId(fallback.id)
+      setZones([])
+      setActiveZoneId('')
       return
     }
     setZones(next)
@@ -189,7 +172,7 @@ export default function ZoneConfig() {
   const handleCancel = () => {
     const defaults = createDefaultZones()
     setZones(defaults)
-    setActiveZoneId(defaults[0].id)
+    setActiveZoneId(defaults[0]?.id || '')
     setIsEditMode(true)
     setDetectionSensitivity(0.75)
     setMinimumChildHeight(50)
@@ -363,6 +346,7 @@ export default function ZoneConfig() {
                 <button
                   type="button"
                   onClick={handleAddVertex}
+                  disabled={!activeZone}
                   className="inline-flex h-10 flex-col items-center justify-center rounded-md bg-emerald-500 text-[10px] font-semibold text-white hover:bg-emerald-400"
                 >
                   <Plus size={14} />
@@ -372,6 +356,7 @@ export default function ZoneConfig() {
                 <button
                   type="button"
                   onClick={handleRemoveVertex}
+                  disabled={!activeZone}
                   className="inline-flex h-10 flex-col items-center justify-center rounded-md border border-white/20 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
                 >
                   <Minus size={14} />
@@ -381,6 +366,7 @@ export default function ZoneConfig() {
                 <button
                   type="button"
                   onClick={handleClearAll}
+                  disabled={!activeZone}
                   className="inline-flex h-10 flex-col items-center justify-center rounded-md border border-white/20 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
                 >
                   <Trash2 size={14} />
