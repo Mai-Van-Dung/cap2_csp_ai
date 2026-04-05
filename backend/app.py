@@ -6,6 +6,7 @@ from urllib.parse import quote
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
+from db_connector import execute_query, fetch_all, fetch_one
 
 BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -135,6 +136,129 @@ def delete_zone(zone_id, camera_id):
         return jsonify({
             "status": "error",
             "message": f"Error deleting zone: {str(e)}"
+        }), 500
+
+
+@app.route("/api/alerts", methods=["GET"])
+def get_alerts_history():
+    """Fetch persisted alert history for Events History page."""
+    try:
+        search = request.args.get("q", "").strip()
+        object_type = request.args.get("object_type", "all").strip().lower()
+        resolved = request.args.get("resolved", "all").strip().lower()
+        limit = request.args.get("limit", default=150, type=int)
+
+        if limit is None or limit <= 0:
+            limit = 150
+        limit = min(limit, 1000)
+
+        where_clauses = ["1=1"]
+        params = []
+
+        if search:
+            like_value = f"%{search}%"
+            where_clauses.append(
+                "(CAST(a.id AS CHAR) LIKE %s OR IFNULL(a.zone_id, '') LIKE %s OR IFNULL(z.zone_name, '') LIKE %s OR IFNULL(c.camera_name, '') LIKE %s)"
+            )
+            params.extend([like_value, like_value, like_value, like_value])
+
+        if object_type in ("child", "adult"):
+            where_clauses.append("LOWER(a.object_type) = %s")
+            params.append(object_type)
+
+        if resolved == "resolved":
+            where_clauses.append("a.is_resolved = 1")
+        elif resolved == "open":
+            where_clauses.append("a.is_resolved = 0")
+
+        params.append(limit)
+
+        rows = fetch_all(
+            f"""
+            SELECT
+                a.id,
+                a.camera_id,
+                a.zone_id,
+                a.object_type,
+                a.confidence,
+                a.image_path,
+                a.video_path,
+                a.is_resolved,
+                a.created_at,
+                z.zone_name,
+                c.camera_name
+            FROM alerts a
+            LEFT JOIN zones z ON a.zone_id = z.id AND a.camera_id = z.camera_id
+            LEFT JOIN cameras c ON a.camera_id = c.id
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY a.created_at DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+
+        host_root = request.host_url.rstrip("/")
+        normalized = []
+
+        for row in rows:
+            image_path = row.get("image_path")
+            image_url = None
+            if image_path:
+                if str(image_path).startswith("http://") or str(image_path).startswith("https://"):
+                    image_url = image_path
+                else:
+                    image_url = f"{host_root}/{str(image_path).lstrip('/')}"
+
+            normalized.append({
+                "id": row.get("id"),
+                "camera_id": row.get("camera_id"),
+                "camera_name": row.get("camera_name") or f"Camera {row.get('camera_id')}",
+                "zone_id": row.get("zone_id"),
+                "zone_name": row.get("zone_name") or (row.get("zone_id") or "Unknown Zone"),
+                "object_type": row.get("object_type") or "Child",
+                "confidence": row.get("confidence"),
+                "image_path": image_path,
+                "image_url": image_url,
+                "video_path": row.get("video_path"),
+                "is_resolved": bool(row.get("is_resolved")),
+                "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            })
+
+        return jsonify({
+            "status": "success",
+            "count": len(normalized),
+            "alerts": normalized,
+        }), 200
+    except Exception as e:
+        logging.error(f"Error fetching alerts history: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error fetching alerts history: {str(e)}",
+        }), 500
+
+
+@app.route("/api/alerts/<int:alert_id>/resolve", methods=["PATCH"])
+def resolve_alert(alert_id):
+    """Mark an alert as resolved."""
+    try:
+        existing = fetch_one("SELECT id, is_resolved FROM alerts WHERE id = %s", (alert_id,))
+        if not existing:
+            return jsonify({
+                "status": "error",
+                "message": "Alert not found",
+            }), 404
+
+        execute_query("UPDATE alerts SET is_resolved = 1 WHERE id = %s", (alert_id,))
+        return jsonify({
+            "status": "success",
+            "message": "Alert marked as resolved",
+            "alert_id": alert_id,
+        }), 200
+    except Exception as e:
+        logging.error(f"Error resolving alert {alert_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error resolving alert: {str(e)}",
         }), 500
 
 if __name__ == "__main__":
