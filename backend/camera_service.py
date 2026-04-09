@@ -54,6 +54,13 @@ _zones_lock = threading.Lock()
 _camera_id = 1  # Default camera ID, can be configured via environment or API
 _last_alert_ts = {}
 _test_video_frame_interval = 0.0
+_alert_event_callback = None
+
+
+def set_alert_event_callback(callback):
+    """Register a callback to publish realtime alert events."""
+    global _alert_event_callback
+    _alert_event_callback = callback
 
 
 def _sanitize_file_token(value: str) -> str:
@@ -116,6 +123,18 @@ def _persist_alert(frame, camera_id, zone_id):
             (camera_id, zone_id, rel_path),
         )
         logging.info(f"Alert saved for camera={camera_id}, zone={zone_id}, image={rel_path}")
+
+        if _alert_event_callback is not None:
+            try:
+                _alert_event_callback({
+                    "camera_id": camera_id,
+                    "zone_id": zone_id,
+                    "image_path": rel_path,
+                    "message": "PHAT HIEN TRE EM XAM NHAP!",
+                    "created_at": time.time(),
+                })
+            except Exception as callback_error:
+                logging.error(f"Error emitting realtime alert event: {callback_error}")
     except Exception as e:
         logging.error(f"Error persisting alert for camera={camera_id}, zone={zone_id}: {e}")
 

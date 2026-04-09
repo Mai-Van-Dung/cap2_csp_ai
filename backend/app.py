@@ -7,6 +7,7 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from db_connector import execute_query, fetch_all, fetch_one
+from flask_socketio import SocketIO
 
 BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -33,6 +34,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 app = Flask(__name__)
 # Cho phép Frontend React truy cập
 CORS(app, resources={r"/*": {"origins": "*"}})
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+
+def emit_new_alert(payload):
+    """Broadcast realtime alert event to Socket.IO clients."""
+    socketio.emit("new_alert", payload)
+
+
+cs.set_alert_event_callback(emit_new_alert)
 
 @app.route("/video_feed")
 def video_feed():
@@ -40,6 +50,39 @@ def video_feed():
         cs.gen_frames(app.logger),
         mimetype="multipart/x-mixed-replace; boundary=frame"
     )
+
+
+@app.route("/viewer/camera")
+def camera_viewer_page():
+        """Render a minimal MJPEG viewer page for React Native WebView embedding."""
+        camera_label = request.args.get("label", "Live Camera")
+        html = f"""
+<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
+    <title>{camera_label}</title>
+    <style>
+        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; background: #0f172a; }}
+        .wrap {{ position: relative; width: 100%; height: 100%; overflow: hidden; }}
+        img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
+        .badge {{
+            position: absolute; top: 10px; right: 10px; z-index: 3;
+            background: #ef4444; color: white; font: 600 12px/1.2 Arial, sans-serif;
+            border-radius: 999px; padding: 6px 10px;
+        }}
+    </style>
+</head>
+<body>
+    <div class=\"wrap\">
+        <div class=\"badge\">LIVE</div>
+        <img src=\"/video_feed\" alt=\"camera-stream\" />
+    </div>
+</body>
+</html>
+"""
+        return Response(html, mimetype="text/html")
 
 @app.route("/status")
 def status():
@@ -198,16 +241,23 @@ def get_alerts_history():
         )
 
         host_root = request.host_url.rstrip("/")
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
         normalized = []
 
         for row in rows:
             image_path = row.get("image_path")
             image_url = None
+            image_urls = []
             if image_path:
                 if str(image_path).startswith("http://") or str(image_path).startswith("https://"):
                     image_url = image_path
+                    image_urls = [image_path]
                 else:
-                    image_url = f"{host_root}/{str(image_path).lstrip('/')}"
+                    relative_path = str(image_path).lstrip('/')
+                    if public_base_url:
+                        image_urls.append(f"{public_base_url}/{relative_path}")
+                    image_urls.append(f"{host_root}/{relative_path}")
+                    image_url = image_urls[0]
 
             normalized.append({
                 "id": row.get("id"),
@@ -219,6 +269,7 @@ def get_alerts_history():
                 "confidence": row.get("confidence"),
                 "image_path": image_path,
                 "image_url": image_url,
+                "image_urls": image_urls,
                 "video_path": row.get("video_path"),
                 "is_resolved": bool(row.get("is_resolved")),
                 "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
@@ -264,4 +315,4 @@ def resolve_alert(alert_id):
 if __name__ == "__main__":
     host = os.getenv("FLASK_SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("FLASK_SERVER_PORT", "5000"))
-    app.run(host=host, port=port, threaded=True)
+    socketio.run(app, host=host, port=port)

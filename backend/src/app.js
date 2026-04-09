@@ -25,7 +25,9 @@ app.get("/api/health", (req, res) => {
 });
 
 // API routes
+import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
+app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 
 // Error handling middleware
