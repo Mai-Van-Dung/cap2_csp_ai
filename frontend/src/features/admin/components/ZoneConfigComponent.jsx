@@ -11,6 +11,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { saveZoneConfig, loadZoneConfig, deleteZone } from '../api/zone_service';
+import { VIDEO_FEED_URL } from '../../../config/serviceUrls';
 
 const ZoneConfigComponent = ({ cameraId = 1 }) => {
     const [zones, setZones] = useState([]);
@@ -32,7 +33,7 @@ const ZoneConfigComponent = ({ cameraId = 1 }) => {
     // Load video stream
     useEffect(() => {
         if (videoRef.current) {
-            videoRef.current.src = 'http://localhost:5000/video_feed';
+            videoRef.current.src = VIDEO_FEED_URL;
         }
     }, []);
 

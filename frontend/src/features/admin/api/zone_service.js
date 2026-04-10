@@ -6,7 +6,9 @@
  * import { zoneService } from './zoneService.js'
  */
 
-const API_BASE_URL = "http://localhost:5000";
+import { BACKEND_BASE_URL } from "../../../config/serviceUrls";
+
+const API_BASE_URL = BACKEND_BASE_URL;
 
 /**
  * Save zone configuration to the backend

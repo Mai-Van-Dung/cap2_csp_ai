@@ -1,8 +1,9 @@
 import { Minus, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadZoneConfig, saveZoneConfig } from '../api/zone_service'
+import { VIDEO_FEED_URL } from '../../../config/serviceUrls'
 
-const LIVE_STREAM_URL = 'http://localhost:5000/video_feed'
+const LIVE_STREAM_URL = VIDEO_FEED_URL
 
 const GAUGE_ARC = 157.08
 const clamp01 = (n) => Math.max(0, Math.min(1, n))

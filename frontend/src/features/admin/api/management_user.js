@@ -1,7 +1,7 @@
 import axios from "axios";
+import { USER_API_URL } from "../../../config/serviceUrls";
 
-const API_URL =
-  import.meta.env.VITE_USER_API_URL || "http://localhost:5001/api/users";
+const API_URL = USER_API_URL;
 
 // Lấy danh sách tất cả users
 export const getAllUsers = async () => {

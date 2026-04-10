@@ -1,7 +1,7 @@
 import axios from "axios";
+import { ALERTS_API_URL } from "../../../config/serviceUrls";
 
-const ALERTS_API_BASE =
-  import.meta.env.VITE_ALERTS_API_URL || "http://localhost:5000/api/alerts";
+const ALERTS_API_BASE = ALERTS_API_URL;
 
 export const getAlertHistory = async (params = {}) => {
   const response = await axios.get(ALERTS_API_BASE, { params });

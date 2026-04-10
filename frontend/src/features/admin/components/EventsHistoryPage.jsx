@@ -36,6 +36,7 @@ function normalizeConfidence(confidence) {
 export default function EventsHistoryPage() {
   const [alerts, setAlerts] = useState([])
   const [selectedId, setSelectedId] = useState(null)
+  const [imageAttemptIndex, setImageAttemptIndex] = useState(0)
   const [searchText, setSearchText] = useState('')
   const [objectFilter, setObjectFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -92,6 +93,21 @@ export default function EventsHistoryPage() {
     () => alerts.find((item) => item.id === selectedId) || null,
     [alerts, selectedId],
   )
+
+  const alertImageUrls = useMemo(() => {
+    if (!selectedAlert) return []
+
+    const urls = Array.isArray(selectedAlert.image_urls) ? selectedAlert.image_urls.filter(Boolean) : []
+    if (urls.length > 0) return urls
+
+    return selectedAlert.image_url ? [selectedAlert.image_url] : []
+  }, [selectedAlert])
+
+  const currentAlertImage = alertImageUrls[imageAttemptIndex] || FALLBACK_IMAGE
+
+  useEffect(() => {
+    setImageAttemptIndex(0)
+  }, [selectedAlert?.id])
 
   const summary = useMemo(() => {
     const total = alerts.length
@@ -299,10 +315,15 @@ export default function EventsHistoryPage() {
 
                 <div className="overflow-hidden rounded-md border border-white/10 bg-black/40">
                   <img
-                    src={selectedAlert.image_url || FALLBACK_IMAGE}
+                    src={currentAlertImage}
                     alt={`Alert ${selectedAlert.id}`}
                     className="h-auto w-full object-cover"
                     onError={(event) => {
+                      if (imageAttemptIndex < alertImageUrls.length - 1) {
+                        setImageAttemptIndex((value) => value + 1)
+                        return
+                      }
+
                       event.currentTarget.src = FALLBACK_IMAGE
                     }}
                   />
