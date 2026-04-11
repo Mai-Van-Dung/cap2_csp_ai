@@ -106,7 +106,7 @@ def _should_trigger_alert(camera_id, zone_id, now_ts):
     return True
 
 
-def _persist_alert(frame, camera_id, zone_id):
+def _persist_alert(frame, camera_id, zone_id, confidence=0.0):
     try:
         os.makedirs(ALERT_DIR, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -126,7 +126,7 @@ def _persist_alert(frame, camera_id, zone_id):
         logging.info(f"Alert saved for camera={camera_id}, zone={zone_id}, image={rel_path}")
 
         # ✅ THÊM MỚI: Gửi Telegram qua Node backend
-        _notify_telegram(camera_id, zone_id, rel_path)
+        _notify_telegram(camera_id, zone_id, rel_path, confidence)
 
         if _alert_event_callback is not None:
             try:
@@ -143,8 +143,7 @@ def _persist_alert(frame, camera_id, zone_id):
         logging.error(f"Error persisting alert for camera={camera_id}, zone={zone_id}: {e}")
 
 
-def _notify_telegram(camera_id, zone_id, image_path=""):
-    """Gọi Node backend để gửi Telegram notification"""
+def _notify_telegram(camera_id, zone_id, image_path="", confidence=0.0):
     node_url = os.getenv("NODE_BACKEND_URL", "http://localhost:5003")
     secret   = os.getenv("INTERNAL_SECRET", "mot_chuoi_bi_mat_bat_ky_vd_abc123xyz")
     try:
@@ -153,7 +152,7 @@ def _notify_telegram(camera_id, zone_id, image_path=""):
             json={
                 "object_type": "Trẻ em",
                 "camera_name": f"Camera {camera_id}",
-                "confidence":  0.95,
+                "confidence":  float(confidence),
                 "image_path":  image_path,
                 "secret":      secret,
             },
@@ -395,7 +394,7 @@ def _infer_worker(app_logger):
                         )
                         now_ts = time.time()
                         if _should_trigger_alert(_camera_id, hit_zone["id"], now_ts):
-                            _persist_alert(processed, _camera_id, hit_zone["id"])
+                            _persist_alert(processed, _camera_id, hit_zone["id"], float(confs[idx]))
 
             if intrusion_detected:
                 cv2.putText(
