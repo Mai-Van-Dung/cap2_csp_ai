@@ -1,3 +1,4 @@
+import requests 
 import os
 import time
 import cv2
@@ -124,6 +125,9 @@ def _persist_alert(frame, camera_id, zone_id):
         )
         logging.info(f"Alert saved for camera={camera_id}, zone={zone_id}, image={rel_path}")
 
+        # ✅ THÊM MỚI: Gửi Telegram qua Node backend
+        _notify_telegram(camera_id, zone_id, rel_path)
+
         if _alert_event_callback is not None:
             try:
                 _alert_event_callback({
@@ -137,6 +141,27 @@ def _persist_alert(frame, camera_id, zone_id):
                 logging.error(f"Error emitting realtime alert event: {callback_error}")
     except Exception as e:
         logging.error(f"Error persisting alert for camera={camera_id}, zone={zone_id}: {e}")
+
+
+def _notify_telegram(camera_id, zone_id, image_path=""):
+    """Gọi Node backend để gửi Telegram notification"""
+    node_url = os.getenv("NODE_BACKEND_URL", "http://localhost:5003")
+    secret   = os.getenv("INTERNAL_SECRET", "mot_chuoi_bi_mat_bat_ky_vd_abc123xyz")
+    try:
+        requests.post(
+            f"{node_url}/api/alerts/notify",
+            json={
+                "object_type": "Trẻ em",
+                "camera_name": f"Camera {camera_id}",
+                "confidence":  0.95,
+                "image_path":  image_path,
+                "secret":      secret,
+            },
+            timeout=5
+        )
+        logging.info("Telegram notification sent")
+    except Exception as e:
+        logging.error(f"[Telegram notify error] {e}")
 
 
 def build_rtsp_url(path: str) -> str:
