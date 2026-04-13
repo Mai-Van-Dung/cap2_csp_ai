@@ -315,4 +315,4 @@ def resolve_alert(alert_id):
 if __name__ == "__main__":
     host = os.getenv("FLASK_SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("FLASK_SERVER_PORT", "5000"))
-    socketio.run(app, host=host, port=port)
+    socketio.run(app, host=host, port=port, use_reloader=False)

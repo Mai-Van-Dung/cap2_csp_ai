@@ -8,6 +8,18 @@ yarn.lock
 .env.local
 .env.*.local
 
+setup_db.py
+test_connection.py
+static
+/AGE_DETECTION_OPTIMIZATIONS.md
+debug_age_detection.py
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # Logs
 logs/
 *.log
@@ -25,6 +37,12 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Build
 dist/
