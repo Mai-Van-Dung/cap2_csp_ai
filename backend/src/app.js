@@ -24,6 +24,30 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date() });
 });
 
+// Internal alert notification endpoint used by the Python camera service.
+app.post("/api/alerts/notify", (req, res) => {
+  const { object_type, camera_name, confidence, image_path } = req.body || {};
+
+  if (!object_type || !camera_name) {
+    return res.status(400).json({
+      status: "error",
+      message: "object_type and camera_name are required",
+    });
+  }
+
+  console.log("[ALERT] notify", {
+    object_type,
+    camera_name,
+    confidence,
+    image_path,
+  });
+
+  return res.json({
+    status: "success",
+    message: "Alert notification accepted",
+  });
+});
+
 // API routes
 import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";

@@ -1,6 +1,7 @@
 import os
 import time
 import cv2
+import socket
 import logging
 from urllib.parse import quote
 from flask import Flask, Response, jsonify, request
@@ -14,6 +15,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 import camera_service as cs
 import zone_service
+import alert_service
 
 # --- CẤU HÌNH THÔNG SỐ CAMERA ---
 # Bạn có thể thay đổi trực tiếp ở đây hoặc dùng biến môi trường
@@ -37,12 +39,72 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
+def _detect_local_ipv4_candidates():
+    """Detect local IPv4 addresses so clients can auto-probe after Wi-Fi changes."""
+    candidates = []
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                candidates.append(ip)
+    except Exception:
+        pass
+
+    try:
+        hostname = socket.gethostname()
+        for item in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = item[4][0]
+            if ip and not ip.startswith("127."):
+                candidates.append(ip)
+    except Exception:
+        pass
+
+    unique = []
+    for ip in candidates:
+        if ip not in unique:
+            unique.append(ip)
+    return unique
+
+
+def _build_connection_base_candidates(host_url=None):
+    """Build ordered camera/socket base URL candidates for cross-project clients."""
+    configured_public_base = (
+        os.getenv("CAMERA_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    )
+    server_port = int(os.getenv("FLASK_SERVER_PORT", "5000"))
+
+    bases = []
+    if configured_public_base:
+        bases.append(configured_public_base)
+
+    if host_url:
+        bases.append(host_url.rstrip("/"))
+
+    bases.extend([
+        f"http://127.0.0.1:{server_port}",
+        f"http://localhost:{server_port}",
+    ])
+
+    for ip in _detect_local_ipv4_candidates():
+        bases.append(f"http://{ip}:{server_port}")
+
+    deduped = []
+    for base in bases:
+        if base and base not in deduped:
+            deduped.append(base)
+    return deduped
+
+
 def emit_new_alert(payload):
     """Broadcast realtime alert event to Socket.IO clients."""
     socketio.emit("new_alert", payload)
 
 
 cs.set_alert_event_callback(emit_new_alert)
+alert_service.set_alert_event_callback(emit_new_alert)
 
 @app.route("/video_feed")
 def video_feed():
@@ -87,6 +149,60 @@ def camera_viewer_page():
 @app.route("/status")
 def status():
     return jsonify(cs.stream_status)
+
+
+@app.route("/api/connection-info", methods=["GET"])
+def connection_info():
+    """Expose dynamic connection candidates so external apps can auto-connect."""
+    base_candidates = _build_connection_base_candidates(request.host_url)
+    preferred_base = base_candidates[0] if base_candidates else request.host_url.rstrip("/")
+
+    return jsonify({
+        "status": "success",
+        "preferred_base_url": preferred_base,
+        "base_candidates": base_candidates,
+        "camera": {
+            "viewer_path": "/viewer/camera",
+            "video_feed_path": "/video_feed",
+            "status_path": "/status",
+            "viewer_url": f"{preferred_base}/viewer/camera",
+        },
+        "socket": {
+            "path": "/socket.io",
+            "event": "new_alert",
+            "handshake_url": f"{preferred_base}/socket.io/?EIO=4&transport=polling",
+        },
+    }), 200
+
+
+@app.route("/api/alerts/notify", methods=["POST"])
+def notify_alert():
+    """Accept internal alert notifications from the camera service during local testing."""
+    data = request.get_json(silent=True) or {}
+
+    object_type = data.get("object_type")
+    camera_name = data.get("camera_name")
+    confidence = data.get("confidence")
+    image_path = data.get("image_path")
+
+    if not object_type or not camera_name:
+        return jsonify({
+            "status": "error",
+            "message": "object_type and camera_name are required",
+        }), 400
+
+    app.logger.info(
+        "Internal alert accepted | camera=%s | object_type=%s | confidence=%s | image=%s",
+        camera_name,
+        object_type,
+        confidence,
+        image_path,
+    )
+
+    return jsonify({
+        "status": "success",
+        "message": "Alert notification accepted",
+    }), 200
 
 @app.route("/api/save_config", methods=["POST"])
 def save_config():

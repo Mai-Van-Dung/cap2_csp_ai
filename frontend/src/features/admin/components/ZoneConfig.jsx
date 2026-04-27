@@ -8,7 +8,37 @@ const LIVE_STREAM_URL = VIDEO_FEED_URL
 const GAUGE_ARC = 157.08
 const clamp01 = (n) => Math.max(0, Math.min(1, n))
 
-const createDefaultZones = () => []
+const createDefaultZones = () => [
+  {
+    id: 'zone_a',
+    name: 'Zone_A (Buffer)',
+    vertices: [
+      { x: 0.08, y: 0.18 },
+      { x: 0.36, y: 0.18 },
+      { x: 0.36, y: 0.55 },
+      { x: 0.08, y: 0.55 },
+    ],
+  },
+  {
+    id: 'zone_b',
+    name: 'Zone_B (Danger)',
+    vertices: [
+      { x: 0.44, y: 0.25 },
+      { x: 0.82, y: 0.25 },
+      { x: 0.82, y: 0.78 },
+      { x: 0.44, y: 0.78 },
+    ],
+  },
+]
+
+const roleFromZone = (zone) => {
+  const text = `${zone?.id || ''} ${zone?.name || ''}`.toLowerCase()
+  if (text.includes('zone_a') || text.includes('zone a') || text.includes('buffer')) return 'zone_a'
+  if (text.includes('zone_b') || text.includes('zone b') || text.includes('danger')) return 'zone_b'
+  return null
+}
+
+const labelForRole = (role) => (role === 'zone_b' ? 'Zone_B (Danger)' : 'Zone_A (Buffer)')
 
 const getNextZoneId = (zones) => {
   const max = zones.reduce((acc, zone) => {
@@ -61,19 +91,29 @@ export default function ZoneConfig() {
     const initZones = async () => {
       try {
         const dbZones = await loadZoneConfig(cameraId)
-        if (!dbZones.length) return
-
         const mapped = dbZones.map((z) => ({
           id: z.id,
           name: z.zone_name || z.name || z.id,
           vertices: normalizeVerticesFromDb(z.coordinates),
         }))
 
-        setZones(mapped)
-        setActiveZoneId(mapped[0]?.id || '')
+        const fallbackZones = createDefaultZones()
+        const zoneA = mapped.find((zone) => roleFromZone(zone) === 'zone_a') || mapped[0] || fallbackZones[0]
+        const zoneB = mapped.find((zone) => roleFromZone(zone) === 'zone_b') || mapped[1] || fallbackZones[1]
+
+        const normalized = [
+          { ...zoneA, id: 'zone_a', name: zoneA.name || labelForRole('zone_a') },
+          { ...zoneB, id: 'zone_b', name: zoneB.name || labelForRole('zone_b') },
+        ]
+
+        setZones(normalized)
+        setActiveZoneId(normalized[0]?.id || '')
         setMinimumChildHeight(Number(dbZones[0]?.min_child_height ?? 50))
         setDetectionSensitivity(Number(dbZones[0]?.sensitivity ?? 0.75))
       } catch (error) {
+        const defaults = createDefaultZones()
+        setZones(defaults)
+        setActiveZoneId(defaults[0]?.id || '')
         setApiError(error?.message || 'Khong tai duoc zone tu server')
       }
     }
@@ -153,21 +193,34 @@ export default function ZoneConfig() {
   const handleClearAll = () => updateActiveVertices([])
 
   const handleAddNewZone = () => {
-    const id = getNextZoneId(zones)
-    setZones((prev) => [...prev, { id, name: `Pool Zone ${zones.length + 1}`, vertices: [] }])
-    setActiveZoneId(id)
+    setZones((prev) => {
+      if (prev.length >= 2) return prev
+      const nextRole = prev.some((zone) => zone.id === 'zone_a') ? 'zone_b' : 'zone_a'
+      const nextZone = {
+        id: nextRole,
+        name: labelForRole(nextRole),
+        vertices: [],
+      }
+      const next = [...prev, nextZone]
+      setActiveZoneId(nextRole)
+      return next
+    })
     setIsEditMode(true)
   }
 
   const handleDeleteZone = (zoneId) => {
-    const next = zones.filter((z) => z.id !== zoneId)
-    if (next.length === 0) {
-      setZones([])
-      setActiveZoneId('')
+    const role = roleFromZone(zones.find((z) => z.id === zoneId))
+    if (role === 'zone_a' || role === 'zone_b') {
+      const defaults = createDefaultZones()
+      const replacement = defaults.find((zone) => zone.id === role)
+      setZones((prev) => prev.map((zone) => (zone.id === zoneId ? { ...replacement, id: role } : zone)))
+      setActiveZoneId(role)
       return
     }
+
+    const next = zones.filter((z) => z.id !== zoneId)
     setZones(next)
-    if (activeZoneId === zoneId) setActiveZoneId(next[0].id)
+    if (activeZoneId === zoneId) setActiveZoneId(next[0]?.id || 'zone_a')
   }
 
   const handleCancel = () => {
@@ -192,8 +245,8 @@ export default function ZoneConfig() {
       setApiNotice('')
 
       const payloadZones = zones.map((z) => ({
-        id: z.id,
-        name: z.name,
+        id: roleFromZone(z) || (z.id === 'zone_b' ? 'zone_b' : 'zone_a'),
+        name: z.name || labelForRole(roleFromZone(z) || (z.id === 'zone_b' ? 'zone_b' : 'zone_a')),
         vertices: normalizeVerticesForSave(z.vertices),
       }))
 

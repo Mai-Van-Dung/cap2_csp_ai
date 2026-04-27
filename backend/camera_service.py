@@ -9,6 +9,8 @@ from ultralytics import YOLO
 import zone_service
 import logging
 from db_connector import execute_query
+import video_service
+import alert_service
 
 # ✅ Age/Gender Detection (Proper initialization)
 DEEPFACE_AVAILABLE = False
@@ -327,7 +329,7 @@ def _persist_alert(frame, camera_id, zone_id, person_type="UNKNOWN", age=None, c
 
 def _notify_telegram(camera_id, zone_id, image_path="", person_type="UNKNOWN", age=None, confidence=0.0):
     """Gọi Node backend để gửi Telegram notification"""
-    node_url = os.getenv("NODE_BACKEND_URL", "http://localhost:5003")
+    node_url = os.getenv("ALERT_NOTIFY_URL", os.getenv("NODE_BACKEND_URL", "http://127.0.0.1:5000"))
     secret   = os.getenv("INTERNAL_SECRET", "mot_chuoi_bi_mat_bat_ky_vd_abc123xyz")
     try:
         # ✅ Tạo object_type rõ ràng với tuổi (nếu có)
@@ -345,7 +347,7 @@ def _notify_telegram(camera_id, zone_id, image_path="", person_type="UNKNOWN", a
                 "secret":      secret,
             },
             timeout=5
-        )
+        ).raise_for_status()
         logging.info(f"Telegram notification sent for {person_type}")
     except Exception as e:
         logging.error(f"[Telegram notify error] {e}")
@@ -692,6 +694,10 @@ def _infer_worker(app_logger):
         app_logger.error(stream_status["last_error"])
         return
 
+    # Initialize video and alert services
+    video_service.initialize_video_service()
+    app_logger.info("✅ Video Service initialized")
+
     # Load zones from database
     zones = load_zones_from_db(_camera_id)
     app_logger.info(f"Initial zone load: {len(zones)} zones")
@@ -729,7 +735,14 @@ def _infer_worker(app_logger):
 
             processed = frame.copy()
             prepared_zones = _prepare_zone_polygons(zones, processed.shape)
-            _draw_zone_overlay(processed, prepared_zones)
+
+            # Prepare zones by ID for two-stage detection logic
+            zones_by_id = {}
+            for zone in prepared_zones:
+                zones_by_id[zone["id"]] = zone
+
+            if zones_by_id:
+                video_service.draw_zone_visualization(processed, zones_by_id)
 
             intrusion_detected = False
             yolo_result = results[0]
@@ -738,6 +751,7 @@ def _infer_worker(app_logger):
             if boxes is not None and len(boxes) > 0:
                 xyxy = boxes.xyxy.cpu().numpy()
                 confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.array([0.0] * len(xyxy))
+                analysis_frame = frame.copy()
 
                 for idx, bbox in enumerate(xyxy):
                     x1, y1, x2, y2 = bbox.astype(int)
@@ -746,8 +760,24 @@ def _infer_worker(app_logger):
                     x2 = int(np.clip(x2, 0, processed.shape[1] - 1))
                     y2 = int(np.clip(y2, 0, processed.shape[0] - 1))
 
+                    # ========================================
+                    # TWO-STAGE ALERT DETECTION (NEW)
+                    # ========================================
+                    try:
+                        video_service.process_detection(
+                            frame=analysis_frame,
+                            camera_id=_camera_id,
+                            bbox=(x1, y1, x2, y2),
+                            zones_by_id=zones_by_id,
+                            frame_width=processed.shape[1],
+                            frame_height=processed.shape[0]
+                        )
+                    except Exception as e:
+                        app_logger.warning(f"Two-stage detection error: {e}")
+                    # ========================================
+
                     # ✅ Phân loại tuổi: CHILD vs ADULT
-                    person_type, age, age_conf = classify_person_age(processed, (x1, y1, x2, y2))
+                    person_type, age, age_conf = classify_person_age(analysis_frame, (x1, y1, x2, y2))
                     
                     # Foot-point for intrusion logic.
                     cx = float(x1 + x2) / 2.0
@@ -766,14 +796,17 @@ def _infer_worker(app_logger):
                     if person_type == "CHILD":
                         box_color = (0, 0, 255)  # Red for CHILD
                         label_prefix = "CHILD"
-                        intrusion_detected = True  # Trẻ em luôn cảnh báo
                     else:
                         box_color = (0, 255, 0)  # Green for ADULT
                         label_prefix = "ADULT"
                     
-                    if is_intruding:
+                    if is_intruding and person_type == "CHILD":
                         box_color = (0, 0, 255)  # Red warning for intrusion
                         label_suffix = " WARNING"
+                        intrusion_detected = True
+                    elif is_intruding:
+                        box_color = (0, 255, 0)
+                        label_suffix = ""
                     else:
                         label_suffix = ""
                     
@@ -805,9 +838,9 @@ def _infer_worker(app_logger):
                             (0, 0, 255),
                             1,
                         )
-                        now_ts = time.time()
-                        if _should_trigger_alert(_camera_id, hit_zone["id"], now_ts):
-                            _persist_alert(processed, _camera_id, hit_zone["id"], person_type, age, float(confs[idx]))
+
+            # Increment frame counter for video service
+            video_service.increment_frame_counter()
 
             if intrusion_detected:
                 cv2.putText(
