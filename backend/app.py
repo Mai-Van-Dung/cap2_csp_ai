@@ -1,14 +1,25 @@
 import os
 import time
 import cv2
+import numpy as np
 import socket
 import logging
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, session
 from flask_cors import CORS
 from dotenv import load_dotenv
 from db_connector import execute_query, fetch_all, fetch_one
 from flask_socketio import SocketIO
+from ultralytics import YOLO
+import jwt
+
+try:
+    import bcrypt
+except ImportError:
+    bcrypt = None
+
+from werkzeug.security import check_password_hash
 
 BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -30,12 +41,31 @@ RTSP_PATHS = ["/H.264", "/h264_stream", "/live0", "/Streaming/Channels/101"]
 OUTPUT_SIZE = (1280, 720) # Khớp với tỉ lệ 16:9 của Frontend
 TARGET_FPS = 15
 JPEG_QUALITY = 80
+ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "1"))
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", os.path.join(BASE_DIR, "yolov8n.pt"))
+JWT_SECRET = os.getenv("AUTH_JWT_SECRET") or os.getenv("INTERNAL_SECRET") or os.getenv("FLASK_SECRET_KEY") or "cap2-csp-dev-secret"
+USE_TEST_VIDEO = os.getenv("USE_TEST_VIDEO", "false").strip().lower() in ("1", "true", "yes", "on")
+TEST_VIDEO_PATH = os.getenv(
+    "TEST_VIDEO_PATH",
+    os.path.join(BASE_DIR, "videotest", "videotest.mp4"),
+)
+TEST_VIDEO_FORCE_FPS = float(os.getenv("TEST_VIDEO_FORCE_FPS", "0"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 app = Flask(__name__)
+app.secret_key = JWT_SECRET
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 # Cho phép Frontend React truy cập
-CORS(app, resources={r"/*": {"origins": "*"}})
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173").split(",")
+    if origin.strip()
+]
+CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
@@ -101,6 +131,339 @@ def _build_connection_base_candidates(host_url=None):
 def emit_new_alert(payload):
     """Broadcast realtime alert event to Socket.IO clients."""
     socketio.emit("new_alert", payload)
+
+
+_grid_model = None
+
+
+def _encode_auth_token(user_row):
+    user_id = user_row.get("id") if isinstance(user_row, dict) else None
+    if user_id is None and isinstance(user_row, dict):
+        user_id = user_row.get("user_id")
+
+    payload = {
+        "user_id": int(user_id),
+        "username": user_row.get("username"),
+        "full_name": user_row.get("full_name"),
+        "role_id": int(user_row.get("role_id")) if user_row.get("role_id") is not None else None,
+        "role_name": user_row.get("role_name"),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def _decode_bearer_token():
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except jwt.PyJWTError as error:
+        logging.info("Invalid auth token: %s", error)
+        return None
+
+
+def _verify_password(password, stored_hash):
+    if not stored_hash:
+        return False
+
+    if bcrypt is not None and isinstance(stored_hash, str) and stored_hash.startswith("$2"):
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except (ValueError, TypeError):
+            return False
+
+    try:
+        return check_password_hash(stored_hash, password)
+    except Exception:
+        return stored_hash == password
+
+
+def _get_authenticated_identity():
+    if isinstance(session.get("user"), dict):
+        return session["user"]
+
+    token_payload = _decode_bearer_token()
+    if token_payload:
+        return token_payload
+
+    return None
+
+
+def _load_user_identity(user_id):
+    try:
+        return fetch_one(
+            """
+            SELECT u.id, u.username, u.full_name, u.role_id, r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.id = %s
+            """,
+            (user_id,),
+        )
+    except Exception as error:
+        logging.error("Error loading authenticated user %s: %s", user_id, error)
+        return None
+
+
+def _load_default_admin_identity():
+    try:
+        return fetch_one(
+            """
+            SELECT u.id, u.username, u.full_name, u.role_id, r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE LOWER(COALESCE(r.role_name, '')) = 'admin' OR u.role_id = %s
+            ORDER BY u.id ASC
+            LIMIT 1
+            """,
+            (ADMIN_ROLE_ID,),
+        )
+    except Exception as error:
+        logging.error("Error loading fallback admin identity: %s", error)
+        return None
+
+
+def _load_camera_profile(camera_id):
+    try:
+        return fetch_one(
+            """
+            SELECT
+                c.id AS camera_id,
+                c.camera_name,
+                c.location_note,
+                c.rtsp_url,
+                c.status,
+                COALESCE(c.is_online, 0) AS is_online,
+                COALESCE(c.is_active, 1) AS is_active,
+                u.id AS owner_user_id,
+                u.username AS owner_username,
+                u.email AS owner_email,
+                u.full_name AS owner_name,
+                u.email AS owner_email
+            FROM cameras c
+            LEFT JOIN (
+                SELECT camera_id, MAX(user_id) AS owner_user_id
+                FROM user_camera_access
+                WHERE access_level = 'owner'
+                GROUP BY camera_id
+            ) uca ON uca.camera_id = c.id
+            LEFT JOIN users u ON u.id = uca.owner_user_id
+            WHERE c.id = %s
+            """,
+            (camera_id,),
+        )
+    except Exception as error:
+        logging.error("Error loading camera profile %s: %s", camera_id, error)
+        return None
+
+
+def _sync_camera_profile(camera_id, camera_data):
+    if not isinstance(camera_data, dict):
+        return None
+
+    camera_name = (camera_data.get("camera_name") or camera_data.get("name") or f"Camera {camera_id}").strip()
+    location_note = (camera_data.get("location_note") or camera_data.get("location") or "").strip() or None
+    rtsp_url = (camera_data.get("rtsp_url") or camera_data.get("stream_url") or "").strip()
+    status = (camera_data.get("status") or "offline").strip().lower()
+    is_online = 1 if bool(camera_data.get("is_online")) else 0
+    is_active = 1 if camera_data.get("is_active", True) else 0
+
+    execute_query(
+        """
+        INSERT INTO cameras (id, camera_name, location_note, rtsp_url, status, is_online, is_active)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            camera_name = VALUES(camera_name),
+            location_note = VALUES(location_note),
+            rtsp_url = VALUES(rtsp_url),
+            status = VALUES(status),
+            is_online = VALUES(is_online),
+            is_active = VALUES(is_active)
+        """,
+        (camera_id, camera_name, location_note, rtsp_url, status, is_online, is_active),
+    )
+
+    owner_user_id = camera_data.get("owner_user_id") or camera_data.get("owner_id")
+    if owner_user_id in (None, "", 0, "0"):
+        return _load_camera_profile(camera_id)
+
+    owner_user_id = int(owner_user_id)
+    owner_exists = fetch_one("SELECT id FROM users WHERE id = %s", (owner_user_id,))
+    if not owner_exists:
+        raise ValueError(f"Owner user {owner_user_id} not found")
+
+    execute_query(
+        "DELETE FROM user_camera_access WHERE camera_id = %s AND access_level = 'owner'",
+        (camera_id,),
+    )
+    execute_query(
+        "INSERT INTO user_camera_access (user_id, camera_id, access_level) VALUES (%s, %s, 'owner')",
+        (owner_user_id, camera_id),
+    )
+
+    return _load_camera_profile(camera_id)
+
+
+def _require_admin_identity():
+    identity = _get_authenticated_identity()
+    if not identity:
+        if os.getenv("NODE_ENV", "development").lower() != "production":
+            fallback_identity = _load_default_admin_identity()
+            if fallback_identity:
+                return fallback_identity, None
+
+        return None, ({
+            "status": "error",
+            "message": "Authentication required",
+        }, 401)
+
+    user_id = identity.get("user_id") or identity.get("id")
+    if user_id is None:
+        return None, ({
+            "status": "error",
+            "message": "Invalid authentication payload",
+        }, 401)
+
+    user_row = _load_user_identity(user_id)
+    if not user_row:
+        return None, ({
+            "status": "error",
+            "message": "Authenticated user not found",
+        }, 401)
+
+    role_id = user_row.get("role_id")
+    role_name = (user_row.get("role_name") or "").strip().lower()
+    if role_name != "admin" and role_id != ADMIN_ROLE_ID:
+        return None, ({
+            "status": "error",
+            "message": "Admin access required",
+        }, 403)
+
+    return user_row, None
+
+
+def _get_grid_model():
+    global _grid_model
+    if _grid_model is not None:
+        return _grid_model
+
+    _grid_model = YOLO(YOLO_MODEL_PATH)
+    return _grid_model
+
+
+def _make_placeholder_frame(lines):
+    frame = np.zeros((OUTPUT_SIZE[1], OUTPUT_SIZE[0], 3), dtype=np.uint8)
+    frame[:] = (10, 17, 27)
+
+    if isinstance(lines, str):
+        lines = [lines]
+
+    y = 70
+    for line in lines:
+        cv2.putText(frame, line, (40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+        y += 42
+
+    return frame
+
+
+def _encode_frame(frame):
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+    if not ok:
+        return None
+    return buf.tobytes()
+
+
+def _open_test_video_capture():
+    cap = cv2.VideoCapture(TEST_VIDEO_PATH)
+    if not cap.isOpened():
+        return None, 0.0
+
+    source_fps = TEST_VIDEO_FORCE_FPS if TEST_VIDEO_FORCE_FPS > 0 else cap.get(cv2.CAP_PROP_FPS)
+    frame_interval = 0.0
+    if source_fps and source_fps > 0:
+        frame_interval = 1.0 / float(source_fps)
+    else:
+        frame_interval = 1.0 / float(TARGET_FPS)
+
+    return cap, frame_interval
+
+
+def _stream_camera_feed(camera_id, camera_row):
+    camera_name = camera_row.get("camera_name") or f"Camera {camera_id}"
+    location_note = camera_row.get("location_note") or ""
+    model = _get_grid_model()
+
+    cap = None
+    reconnect_delay = 1.5
+    test_frame_interval = 0.0
+
+    while True:
+        if cap is None or not cap.isOpened():
+            if USE_TEST_VIDEO:
+                cap, test_frame_interval = _open_test_video_capture()
+                if cap is None:
+                    placeholder = _make_placeholder_frame([
+                        f"{camera_name} (ID {camera_id})",
+                        "Cannot open test video",
+                        os.path.basename(TEST_VIDEO_PATH),
+                    ])
+                    payload = _encode_frame(placeholder)
+                    if payload:
+                        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+                    time.sleep(reconnect_delay)
+                    continue
+            else:
+                rtsp_url = camera_row["rtsp_url"]
+                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                if not cap.isOpened():
+                    cap.release()
+                    cap = None
+                    placeholder = _make_placeholder_frame([
+                        f"{camera_name} (ID {camera_id})",
+                        "Cannot open RTSP stream",
+                        location_note or "No location note",
+                    ])
+                    payload = _encode_frame(placeholder)
+                    if payload:
+                        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+                    time.sleep(reconnect_delay)
+                    continue
+
+        ok, frame = cap.read()
+        if not ok:
+            if USE_TEST_VIDEO:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = cap.read()
+                if not ok:
+                    cap.release()
+                    cap = None
+                    time.sleep(reconnect_delay)
+                    continue
+            else:
+                cap.release()
+                cap = None
+                continue
+
+        try:
+            results = model.predict(source=frame, classes=[0], conf=0.25, verbose=False)
+            rendered = results[0].plot() if results else frame
+        except Exception as infer_error:
+            logging.error("YOLO inference failed for camera %s: %s", camera_id, infer_error)
+            rendered = frame
+
+        payload = _encode_frame(rendered)
+        if payload:
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+
+        if USE_TEST_VIDEO and test_frame_interval > 0:
+            time.sleep(test_frame_interval)
 
 
 cs.set_alert_event_callback(emit_new_alert)
@@ -175,6 +538,203 @@ def connection_info():
     }), 200
 
 
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    """Authenticate a user and issue both session and JWT credentials."""
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+
+    if not username or not password:
+        return jsonify({
+            "status": "error",
+            "message": "username and password are required",
+        }), 400
+
+    try:
+        user = fetch_one(
+            """
+            SELECT u.id, u.username, u.full_name, u.password_hash, u.role_id, r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.username = %s OR u.email = %s
+            LIMIT 1
+            """,
+            (username, username),
+        )
+    except Exception as error:
+        logging.error("Login query failed: %s", error)
+        return jsonify({
+            "status": "error",
+            "message": f"Database error while logging in: {str(error)}",
+        }), 500
+
+    if not user:
+        return jsonify({
+            "status": "error",
+            "message": "Invalid username or password",
+        }), 401
+
+    password_hash = user.get("password_hash") or ""
+    if not _verify_password(password, password_hash):
+        return jsonify({
+            "status": "error",
+            "message": "Invalid username or password",
+        }), 401
+
+    identity = {
+        "user_id": int(user["id"]),
+        "username": user.get("username"),
+        "full_name": user.get("full_name"),
+        "role_id": user.get("role_id"),
+        "role_name": user.get("role_name"),
+    }
+    token = _encode_auth_token(identity)
+    session["user"] = identity
+    session.permanent = True
+
+    return jsonify({
+        "status": "success",
+        "token": token,
+        "user": identity,
+    }), 200
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me():
+    identity = _get_authenticated_identity()
+    if not identity:
+        return jsonify({
+            "status": "error",
+            "message": "Authentication required",
+        }), 401
+
+    return jsonify({
+        "status": "success",
+        "user": identity,
+    }), 200
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    session.pop("user", None)
+    return jsonify({
+        "status": "success",
+        "message": "Logged out",
+    }), 200
+
+
+@app.route("/api/admin/cameras/grid", methods=["GET"])
+def admin_cameras_grid():
+    """Return camera grid data for the admin dashboard."""
+    _, auth_error = _require_admin_identity()
+    if auth_error:
+        return auth_error
+
+    try:
+        cameras = fetch_all(
+            """
+            SELECT
+                c.id AS camera_id,
+                c.camera_name,
+                c.location_note,
+                c.rtsp_url,
+                c.status,
+                COALESCE(c.is_online, 0) AS is_online,
+                COALESCE(c.is_active, 1) AS is_active,
+                u.id AS owner_user_id,
+                u.username AS owner_username,
+                u.email AS owner_email,
+                u.full_name AS owner_name
+            FROM cameras c
+            LEFT JOIN (
+                SELECT camera_id, MAX(user_id) AS owner_user_id
+                FROM user_camera_access
+                WHERE access_level = 'owner'
+                GROUP BY camera_id
+            ) uca
+                ON uca.camera_id = c.id
+            LEFT JOIN users u
+                ON u.id = uca.owner_user_id
+            ORDER BY c.id DESC
+            """
+        )
+
+        return jsonify({
+            "status": "success",
+            "count": len(cameras),
+            "data": cameras,
+        }), 200
+    except Exception as error:
+        logging.error("Error fetching admin camera grid: %s", error)
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to load camera grid: {str(error)}",
+        }), 500
+
+
+@app.route("/api/video_feed/<int:camera_id>")
+def video_feed_by_camera(camera_id):
+    """Stream YOLO-processed MJPEG for a specific camera."""
+    _, auth_error = _require_admin_identity()
+    if auth_error:
+        return auth_error
+
+    try:
+        camera = fetch_one(
+            """
+            SELECT id, camera_name, location_note, rtsp_url, status, is_online
+            FROM cameras
+            WHERE id = %s
+            """,
+            (camera_id,),
+        )
+    except Exception as error:
+        logging.error("Error loading camera %s: %s", camera_id, error)
+        return jsonify({
+            "status": "error",
+            "message": f"Database error while loading camera: {str(error)}",
+        }), 500
+
+    if not camera:
+        return jsonify({
+            "status": "error",
+            "message": f"Camera {camera_id} not found",
+        }), 404
+
+    _, auth_error = _require_admin_identity()
+    if auth_error:
+        return auth_error
+
+    return Response(
+        _stream_camera_feed(camera_id, camera),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.route("/api/cameras/<int:camera_id>", methods=["GET"])
+def get_camera_profile(camera_id):
+    """Return a camera profile together with its single owner."""
+    try:
+        camera = _load_camera_profile(camera_id)
+        if not camera:
+            return jsonify({
+                "status": "error",
+                "message": f"Camera {camera_id} not found",
+            }), 404
+
+        return jsonify({
+            "status": "success",
+            "camera": camera,
+        }), 200
+    except Exception as error:
+        logging.error("Error fetching camera profile %s: %s", camera_id, error)
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to load camera profile: {str(error)}",
+        }), 500
+
+
 @app.route("/api/alerts/notify", methods=["POST"])
 def notify_alert():
     """Accept internal alert notifications from the camera service during local testing."""
@@ -236,6 +796,7 @@ def save_config():
         camera_id = data.get("camera_id")
         zones = data.get("zones", [])
         settings = data.get("settings", {})
+        camera_data = data.get("camera", {})
         
         if not camera_id:
             return jsonify({
@@ -249,6 +810,15 @@ def save_config():
                 "message": "zones must be an array"
             }), 400
         
+        if camera_data:
+            try:
+                _sync_camera_profile(int(camera_id), camera_data)
+            except ValueError as camera_error:
+                return jsonify({
+                    "status": "error",
+                    "message": str(camera_error),
+                }), 400
+
         result = zone_service.save_zone_config(camera_id, zones, settings)
         status_code = 200 if result["status"] == "success" else 400
         return jsonify(result), status_code

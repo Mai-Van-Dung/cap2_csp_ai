@@ -18,6 +18,8 @@ const API_BASE_URL = BACKEND_BASE_URL;
  * @returns {Promise<Object>} Response from server
  */
 export const saveZoneConfig = async (cameraId, zones, settings = {}) => {
+  const { camera, ...zoneSettings } = settings;
+
   try {
     const response = await fetch(`${API_BASE_URL}/api/save_config`, {
       method: "POST",
@@ -27,10 +29,11 @@ export const saveZoneConfig = async (cameraId, zones, settings = {}) => {
       body: JSON.stringify({
         camera_id: cameraId,
         zones: zones,
+        camera: camera || undefined,
         settings: {
-          min_child_height: settings.min_child_height || 50,
-          sensitivity: settings.sensitivity || 0.75,
-          ...settings, // Spread additional settings
+          min_child_height: zoneSettings.min_child_height || 50,
+          sensitivity: zoneSettings.sensitivity || 0.75,
+          ...zoneSettings,
         },
       }),
     });
@@ -69,6 +72,34 @@ export const loadZoneConfig = async (cameraId) => {
     }
   } catch (error) {
     console.error("Load zone config error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Load a camera profile from the backend
+ * @param {number} cameraId - The camera ID
+ * @returns {Promise<Object|null>} Camera profile with owner details
+ */
+export const loadCameraProfile = async (cameraId) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/cameras/${cameraId}`);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return null;
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.status === "success") {
+      return data.camera || null;
+    }
+
+    throw new Error(data.message || "Failed to load camera profile");
+  } catch (error) {
+    console.error("Load camera profile error:", error);
     throw error;
   }
 };

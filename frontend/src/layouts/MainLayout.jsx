@@ -15,7 +15,7 @@ const menuItems = [
   { to: '/live-monitor', label: 'Live Monitor', icon: Monitor },
   { to: '/events-history', label: 'Events History', icon: History },
   { to: '/zone-config', label: 'Zone Config', icon: MapPinned },
-  { to: '/ai-settings', label: 'AI Settings', icon: BrainCircuit },
+  // { to: '/ai-settings', label: 'AI Settings', icon: BrainCircuit },
   { to: '/user-management', label: 'User Management', icon: Users },
 ]
 

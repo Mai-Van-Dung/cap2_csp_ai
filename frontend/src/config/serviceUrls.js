@@ -24,3 +24,11 @@ export const ALERTS_API_URL = stripTrailingSlash(
 export const VIDEO_FEED_URL = stripTrailingSlash(
   import.meta.env.VITE_VIDEO_FEED_URL || `${BACKEND_BASE_URL}/video_feed`,
 );
+
+export const ADMIN_CAMERA_GRID_URL = stripTrailingSlash(
+  import.meta.env.VITE_ADMIN_CAMERA_GRID_URL ||
+    `${BACKEND_BASE_URL}/api/admin/cameras/grid`,
+);
+
+export const cameraVideoFeedUrl = (cameraId) =>
+  `${BACKEND_BASE_URL}/api/video_feed/${cameraId}`;

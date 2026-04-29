@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import MainLayout from './layouts/MainLayout'
-import LiveMonitor from './features/admin/components/LiveMonitor.jsx'
+import AdminCameraGrid from './features/admin/components/LiveMonitor.jsx'
 import EventsHistoryPage from './features/admin/components/EventsHistoryPage.jsx'
 import PlaceholderPage from './features/admin/components/PlaceholderPage.jsx'
 import UserManagementPage from './features/admin/components/UserManagementPage.jsx'
@@ -11,7 +11,7 @@ export default function App() {
     <Routes>
       <Route element={<MainLayout />}>
         <Route index element={<Navigate to="user-management" replace />} />
-        <Route path="live-monitor" element={<LiveMonitor />} />
+        <Route path="live-monitor" element={<AdminCameraGrid />} />
         <Route path="events-history" element={<EventsHistoryPage />} />
         <Route path="zone-config" element={<ZoneConfig />} />
         <Route
