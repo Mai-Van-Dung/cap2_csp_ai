@@ -271,11 +271,12 @@ export default function ZoneConfig() {
   return (
     <section className="grid gap-4 xl:grid-cols-12">
       <div className="xl:col-span-9">
-        <div className="rounded-xl border border-white/10 bg-[#1B2639] p-4 sm:p-5">
-          <h2 className="text-xl font-semibold text-slate-100">DANGEROUS ZONE CONFIGURATION (ROI)</h2>
-          <div className="mt-3 h-px bg-white/10" />
+        <div className="panel overflow-hidden p-4 sm:p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-sky-300">Zone editor</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-50">DANGEROUS ZONE CONFIGURATION (ROI)</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-300">Vẽ và điều chỉnh vùng an toàn/vùng nguy hiểm trực tiếp trên khung video.</p>
 
-          <div className="relative mt-4 aspect-video overflow-hidden rounded-md border border-white/20 bg-[#0A111B]">
+          <div className="relative mt-4 aspect-video overflow-hidden rounded-3xl border border-white/10 bg-[#0A111B]">
             {!streamError && (
               <>
                 <img
@@ -350,7 +351,7 @@ export default function ZoneConfig() {
               </div>
             )}
 
-            <div className="absolute left-3 top-3 z-20 rounded bg-black/55 px-2.5 py-1 text-sm font-medium text-slate-100">
+            <div className="absolute left-3 top-3 z-20 rounded-full border border-white/10 bg-black/55 px-3 py-1 text-sm font-medium text-slate-100 backdrop-blur-sm">
               IP Camera (Live Bantent)
             </div>
 
@@ -364,11 +365,11 @@ export default function ZoneConfig() {
             )}
           </div>
 
-          <div className="mt-5 flex items-center justify-center gap-3">
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
               onClick={() => setIsEditMode((v) => !v)}
-              className="inline-flex h-11 min-w-[180px] items-center justify-center gap-2 rounded-lg bg-emerald-500 px-6 text-sm font-semibold text-white hover:bg-emerald-400"
+              className="inline-flex h-11 min-w-[180px] items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-6 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400"
             >
               <Pencil size={15} />
               EDIT ZONE
@@ -377,7 +378,7 @@ export default function ZoneConfig() {
             <button
               type="button"
               onClick={handleAddNewZone}
-              className="inline-flex h-11 min-w-[180px] items-center justify-center gap-2 rounded-lg bg-sky-500 px-6 text-sm font-semibold text-white hover:bg-sky-400"
+              className="inline-flex h-11 min-w-[180px] items-center justify-center gap-2 rounded-2xl bg-sky-500 px-6 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(14,165,233,0.2)] hover:bg-sky-400"
             >
               <Plus size={16} />
               ADD NEW ZONE
@@ -387,21 +388,21 @@ export default function ZoneConfig() {
       </div>
 
       <aside className="xl:col-span-3">
-        <div className="flex h-full flex-col rounded-xl border border-white/10 bg-[#1B2639] p-4">
-          <h3 className="text-lg font-semibold text-slate-100">CONFIGURATION TOOLS</h3>
+        <div className="flex h-full flex-col rounded-3xl border border-white/10 bg-[#111a2d]/95 p-4 backdrop-blur-sm">
+          <h3 className="text-lg font-semibold text-slate-50">CONFIGURATION TOOLS</h3>
 
-          {!!apiError && <p className="mt-3 rounded-md border border-red-400/40 bg-red-500/15 px-3 py-2 text-xs text-red-200">{apiError}</p>}
-          {!!apiNotice && <p className="mt-3 rounded-md border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-xs text-emerald-200">{apiNotice}</p>}
+          {!!apiError && <p className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">{apiError}</p>}
+          {!!apiNotice && <p className="mt-3 rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">{apiNotice}</p>}
 
           <div className="mt-4 space-y-5">
             <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">ZONE DRAWING TOOLS</h4>
+              <h4 className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">ZONE DRAWING TOOLS</h4>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={handleAddVertex}
                   disabled={!activeZone}
-                  className="inline-flex h-10 flex-col items-center justify-center rounded-md bg-emerald-500 text-[10px] font-semibold text-white hover:bg-emerald-400"
+                  className="inline-flex h-10 flex-col items-center justify-center rounded-2xl bg-emerald-500 text-[10px] font-semibold text-white hover:bg-emerald-400"
                 >
                   <Plus size={14} />
                   ADD VERTEX
@@ -411,7 +412,7 @@ export default function ZoneConfig() {
                   type="button"
                   onClick={handleRemoveVertex}
                   disabled={!activeZone}
-                  className="inline-flex h-10 flex-col items-center justify-center rounded-md border border-white/20 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
+                  className="inline-flex h-10 flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
                 >
                   <Minus size={14} />
                   REMOVE VERTEX
@@ -421,7 +422,7 @@ export default function ZoneConfig() {
                   type="button"
                   onClick={handleClearAll}
                   disabled={!activeZone}
-                  className="inline-flex h-10 flex-col items-center justify-center rounded-md border border-white/20 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
+                  className="inline-flex h-10 flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-[10px] font-semibold text-slate-100 hover:bg-white/10"
                 >
                   <Trash2 size={14} />
                   CLEAR ALL
@@ -430,9 +431,9 @@ export default function ZoneConfig() {
             </div>
 
             <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">AI ACCURACY</h4>
-              <div className="mt-2 rounded-md border border-white/10 bg-white/[0.03] p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">DETECTION SENSITIVITY</p>
+              <h4 className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">AI ACCURACY</h4>
+              <div className="mt-2 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">DETECTION SENSITIVITY</p>
 
                 <svg viewBox="0 0 120 70" className="mt-2 h-20 w-full">
                   <path
@@ -479,7 +480,7 @@ export default function ZoneConfig() {
                   step="1"
                   value={minimumChildHeight}
                   onChange={(e) => setMinimumChildHeight(Number(e.target.value) || 0)}
-                  className="mt-1 h-9 w-full rounded-md border border-white/15 bg-[#0F1729] px-3 text-sm text-slate-100 outline-none focus:border-sky-400"
+                  className="mt-1 h-10 w-full rounded-2xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 outline-none transition focus:border-orange-400/60 focus:bg-white/10 focus:ring-4 focus:ring-orange-500/10"
                 />
 
                 <label className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-slate-200">
@@ -487,7 +488,7 @@ export default function ZoneConfig() {
                     type="checkbox"
                     checked={useAdultFilter}
                     onChange={(e) => setUseAdultFilter(e.target.checked)}
-                    className="h-4 w-4 rounded border-white/20 bg-[#0F1729]"
+                    className="h-4 w-4 rounded border-white/20 bg-white/5"
                   />
                   USE ADULT-HEIGHT FILTER
                 </label>
@@ -495,14 +496,14 @@ export default function ZoneConfig() {
             </div>
 
             <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">ALERTING & LOGGING</h4>
-              <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-white/[0.03] p-3 text-xs">
+              <h4 className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">ALERTING & LOGGING</h4>
+              <div className="mt-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-xs">
                 <label className="inline-flex items-center gap-2 text-slate-200">
                   <input
                     type="checkbox"
                     checked={sendTelegramAlert}
                     onChange={(e) => setSendTelegramAlert(e.target.checked)}
-                    className="h-4 w-4 rounded border-white/20 bg-[#0F1729]"
+                    className="h-4 w-4 rounded border-white/20 bg-white/5"
                   />
                   SEND TELEGRAM ALERT
                 </label>
@@ -512,7 +513,7 @@ export default function ZoneConfig() {
                     type="checkbox"
                     checked={activateSiren}
                     onChange={(e) => setActivateSiren(e.target.checked)}
-                    className="h-4 w-4 rounded border-white/20 bg-[#0F1729]"
+                    className="h-4 w-4 rounded border-white/20 bg-white/5"
                   />
                   ACTIVATE SIREN
                 </label>
@@ -522,7 +523,7 @@ export default function ZoneConfig() {
                     type="checkbox"
                     checked={logEvent}
                     onChange={(e) => setLogEvent(e.target.checked)}
-                    className="h-4 w-4 rounded border-white/20 bg-[#0F1729]"
+                    className="h-4 w-4 rounded border-white/20 bg-white/5"
                   />
                   LOG EVENT
                 </label>
@@ -530,14 +531,14 @@ export default function ZoneConfig() {
             </div>
 
             <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">ZONE LIST</h4>
+              <h4 className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">ZONE LIST</h4>
               <ul className="mt-2 space-y-2">
                 {zones.map((zone, index) => {
                   const selected = zone.id === activeZoneId
                   return (
                     <li
                       key={zone.id}
-                      className={`flex items-center gap-2 rounded-md border px-2 py-2 text-sm ${
+                      className={`flex items-center gap-2 rounded-2xl border px-2 py-2 text-sm ${
                         selected ? 'border-sky-400/70 bg-sky-500/10' : 'border-white/10 bg-white/[0.03]'
                       }`}
                     >
@@ -585,7 +586,7 @@ export default function ZoneConfig() {
                 type="button"
                 onClick={handleSaveConfiguration}
                 disabled={isSaving}
-                className="inline-flex h-10 flex-1 items-center justify-center rounded-md bg-emerald-500 px-3 text-xs font-semibold uppercase tracking-wider text-white hover:bg-emerald-400"
+                className="inline-flex h-10 flex-1 items-center justify-center rounded-2xl bg-emerald-500 px-3 text-xs font-semibold uppercase tracking-wider text-white shadow-[0_14px_30px_rgba(16,185,129,0.2)] hover:bg-emerald-400"
               >
                 {isSaving ? 'SAVING...' : 'SAVE CONFIGURATION'}
               </button>
@@ -593,7 +594,7 @@ export default function ZoneConfig() {
               <button
                 type="button"
                 onClick={handleCancel}
-                className="inline-flex h-10 flex-1 items-center justify-center rounded-md border border-white/20 bg-white/5 px-3 text-xs font-semibold uppercase tracking-wider text-slate-100 hover:bg-white/10"
+                className="inline-flex h-10 flex-1 items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-3 text-xs font-semibold uppercase tracking-wider text-slate-100 hover:bg-white/10"
               >
                 CANCEL
               </button>

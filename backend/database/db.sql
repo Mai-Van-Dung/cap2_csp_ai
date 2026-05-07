@@ -61,10 +61,11 @@ CREATE TABLE `zones` (
 
 -- 5. Bảng cài đặt AI cho camera (ai_settings)
 CREATE TABLE `ai_settings` (
-  `camera_id` INT NOT NULL,
-  `enable_siren` TINYINT(1) DEFAULT '0',
-  `enable_telegram` TINYINT(1) DEFAULT '1',
-  `alert_cooldown` INT DEFAULT '30',
+  `camera_id` int NOT NULL,
+  `enable_siren` tinyint(1) DEFAULT '0',
+  `enable_telegram` tinyint(1) DEFAULT '1',
+  `alert_cooldown` int DEFAULT '30',
+  `supervised_mode` tinyint(1) DEFAULT '0',
   PRIMARY KEY (`camera_id`),
   CONSTRAINT `fk_ai_camera` FOREIGN KEY (`camera_id`) REFERENCES `cameras` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

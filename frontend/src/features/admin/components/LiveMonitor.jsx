@@ -64,22 +64,19 @@ export default function AdminCameraGrid() {
   }, [selectedCamera])
 
   return (
-    <section className="min-h-screen bg-[#0B1220] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
-        <div className="mb-6 flex flex-col gap-4 rounded-3xl border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_32%),linear-gradient(135deg,#101827_0%,#0B1220_100%)] p-5 shadow-[0_20px_60px_rgba(0,0,0,0.28)] sm:p-6 lg:flex-row lg:items-end lg:justify-between">
+    <section className="space-y-5 text-slate-100">
+      <div className="panel overflow-hidden p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-300">Admin Dashboard</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Camera Grid View</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-300">
-              Theo dõi toàn bộ camera theo dạng lưới, xem chủ sở hữu, trạng thái và mở stream trực tiếp khi cần.
-            </p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-sky-300">Admin Dashboard</p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">Camera Grid View</h1>
           </div>
 
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={loadCameras}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/10"
+              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-100 transition hover:bg-white/10"
             >
               <RefreshCw size={16} />
               Refresh
@@ -87,11 +84,7 @@ export default function AdminCameraGrid() {
           </div>
         </div>
 
-        {error && (
-          <div className="mb-5 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-            {error}
-          </div>
-        )}
+        {error && <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">{error}</div>}
 
         {loading ? (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">

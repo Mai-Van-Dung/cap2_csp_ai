@@ -139,18 +139,19 @@ export default function EventsHistoryPage() {
   }
 
   return (
-    <section className="space-y-4">
-      <div className="panel border-white/10 bg-[#1E2738] p-4 sm:p-5">
+    <section className="space-y-5">
+      <div className="panel overflow-hidden p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-100">DANGEROUS ZONE INTRUSION EVENTS HISTORY</h2>
-            <p className="mt-1 text-sm text-slate-400">Theo dõi mọi cảnh báo đã lưu từ hệ thống camera và AI detection.</p>
+          <div className="max-w-2xl">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-sky-300">Event archive</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">DANGEROUS ZONE INTRUSION EVENTS HISTORY</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-300">Theo dõi mọi cảnh báo đã lưu từ hệ thống camera và AI detection.</p>
           </div>
 
           <button
             type="button"
             onClick={fetchAlerts}
-            className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 hover:bg-white/10"
+            className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
           >
             <RefreshCcw size={15} />
             Làm mới
@@ -158,31 +159,31 @@ export default function EventsHistoryPage() {
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-lg border border-danger/25 bg-danger/10 p-3">
-            <p className="text-xs uppercase tracking-wider text-slate-300">Tổng sự kiện</p>
-            <p className="mt-1 text-2xl font-semibold text-slate-100">{summary.total}</p>
+          <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 shadow-[0_12px_30px_rgba(244,63,94,0.08)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-200/80">Tổng sự kiện</p>
+            <p className="mt-2 text-3xl font-semibold text-rose-100">{summary.total}</p>
           </div>
 
-          <div className="rounded-lg border border-amber-300/25 bg-amber-400/10 p-3">
-            <p className="text-xs uppercase tracking-wider text-slate-300">Chưa xử lý</p>
-            <p className="mt-1 text-2xl font-semibold text-amber-300">{summary.unresolved}</p>
+          <div className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4 shadow-[0_12px_30px_rgba(245,158,11,0.08)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-100/80">Chưa xử lý</p>
+            <p className="mt-2 text-3xl font-semibold text-amber-200">{summary.unresolved}</p>
           </div>
 
-          <div className="rounded-lg border border-emerald-300/25 bg-emerald-400/10 p-3">
-            <p className="text-xs uppercase tracking-wider text-slate-300">Đã xử lý</p>
-            <p className="mt-1 text-2xl font-semibold text-emerald-300">{summary.resolved}</p>
+          <div className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-emerald-100/80">Đã xử lý</p>
+            <p className="mt-2 text-3xl font-semibold text-emerald-200">{summary.resolved}</p>
           </div>
 
-          <div className="rounded-lg border border-sky-300/25 bg-sky-400/10 p-3">
-            <p className="text-xs uppercase tracking-wider text-slate-300">Phát hiện trẻ em</p>
-            <p className="mt-1 text-2xl font-semibold text-sky-300">{summary.child}</p>
+          <div className="rounded-2xl border border-sky-300/20 bg-sky-400/10 p-4 shadow-[0_12px_30px_rgba(14,165,233,0.08)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-100/80">Phát hiện trẻ em</p>
+            <p className="mt-2 text-3xl font-semibold text-sky-200">{summary.child}</p>
           </div>
         </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-12">
         <div className="xl:col-span-8">
-          <div className="panel border-white/10 bg-[#1E2738] p-4">
+          <div className="panel overflow-hidden p-4 sm:p-5">
             <div className="flex flex-wrap items-center gap-2">
               <label className="relative min-w-[240px] flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-500" />
@@ -190,14 +191,14 @@ export default function EventsHistoryPage() {
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
                   placeholder="Tìm theo ID, zone, camera..."
-                  className="h-10 w-full rounded-md border border-white/10 bg-[#252531] pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-primary focus:outline-none"
+                  className="h-11 w-full rounded-2xl border border-white/10 bg-white/5 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-orange-400/60 focus:bg-white/10 focus:ring-4 focus:ring-orange-500/10"
                 />
               </label>
 
               <select
                 value={objectFilter}
                 onChange={(event) => setObjectFilter(event.target.value)}
-                className="h-10 min-w-[130px] rounded-md border border-white/10 bg-[#252531] px-3 text-sm text-slate-200 focus:border-primary focus:outline-none"
+                className="h-11 min-w-[150px] rounded-2xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 outline-none transition focus:border-orange-400/60 focus:bg-white/10 focus:ring-4 focus:ring-orange-500/10"
               >
                 <option value="all">Tất cả đối tượng</option>
                 <option value="child">Child</option>
@@ -207,7 +208,7 @@ export default function EventsHistoryPage() {
               <select
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value)}
-                className="h-10 min-w-[130px] rounded-md border border-white/10 bg-[#252531] px-3 text-sm text-slate-200 focus:border-primary focus:outline-none"
+                className="h-11 min-w-[150px] rounded-2xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 outline-none transition focus:border-orange-400/60 focus:bg-white/10 focus:ring-4 focus:ring-orange-500/10"
               >
                 <option value="all">Mọi trạng thái</option>
                 <option value="open">Chưa xử lý</option>
@@ -217,16 +218,16 @@ export default function EventsHistoryPage() {
               <button
                 type="button"
                 onClick={handleApplyFilter}
-                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-[#1A1A1A] hover:bg-[#ff9b25]"
+                className="inline-flex h-11 items-center gap-2 rounded-2xl bg-[linear-gradient(135deg,#ff8c2c_0%,#ff6f26_100%)] px-4 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(255,116,44,0.2)] transition hover:translate-y-[-1px]"
               >
                 <Filter size={15} />
                 Lọc
               </button>
             </div>
 
-            {error && <p className="mt-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+            {error && <p className="mt-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</p>}
 
-            <div className="mt-4 overflow-hidden rounded-lg border border-white/10">
+            <div className="mt-4 overflow-hidden rounded-3xl border border-white/10">
               <div className="overflow-x-auto">
                 <table className="min-w-full border-collapse">
                   <thead className="bg-white/5">
@@ -234,7 +235,7 @@ export default function EventsHistoryPage() {
                       {['Event ID', 'Timestamp', 'Object', 'Zone', 'Confidence', 'Status'].map((label) => (
                         <th
                           key={label}
-                          className="whitespace-nowrap border-b border-white/10 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400"
+                          className="whitespace-nowrap border-b border-white/10 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400"
                         >
                           {label}
                         </th>
@@ -267,7 +268,7 @@ export default function EventsHistoryPage() {
                             key={alert.id}
                             onClick={() => setSelectedId(alert.id)}
                             className={`cursor-pointer border-b border-white/5 transition-colors hover:bg-white/5 ${
-                              isActive ? 'bg-primary/10' : ''
+                              isActive ? 'bg-orange-500/10' : ''
                             }`}
                           >
                             <td className="px-3 py-3 text-sm font-semibold text-slate-100">EVN-{String(alert.id).padStart(3, '0')}</td>
@@ -297,23 +298,23 @@ export default function EventsHistoryPage() {
         </div>
 
         <aside className="xl:col-span-4">
-          <div className="panel border-white/10 bg-[#1E2738] p-4">
-            <h3 className="text-lg font-semibold text-slate-100">Event Detail Panel</h3>
+          <div className="panel p-4">
+            <h3 className="text-lg font-semibold text-slate-50">Event Detail Panel</h3>
 
             {!selectedAlert && (
-              <p className="mt-3 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-400">
+              <p className="mt-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-400">
                 Chọn một sự kiện để xem chi tiết.
               </p>
             )}
 
             {selectedAlert && (
               <div className="mt-3 space-y-3 text-sm">
-                <p className="inline-flex items-center gap-2 text-base font-semibold text-slate-100">
-                  <Siren size={17} className="text-danger" />
+                <p className="inline-flex items-center gap-2 text-base font-semibold text-slate-50">
+                  <Siren size={17} className="text-orange-300" />
                   EVN-{String(selectedAlert.id).padStart(3, '0')}
                 </p>
 
-                <div className="overflow-hidden rounded-md border border-white/10 bg-black/40">
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40">
                   <img
                     src={currentAlertImage}
                     alt={`Alert ${selectedAlert.id}`}
@@ -329,7 +330,7 @@ export default function EventsHistoryPage() {
                   />
                 </div>
 
-                <div className="space-y-2 rounded-md border border-white/10 bg-white/5 p-3">
+                <div className="space-y-2 rounded-2xl border border-white/10 bg-white/5 p-4">
                   <p className="flex items-center justify-between text-slate-300">
                     <span className="inline-flex items-center gap-2 text-slate-400">
                       <Clock3 size={14} />
@@ -371,7 +372,7 @@ export default function EventsHistoryPage() {
                     type="button"
                     onClick={handleResolveSelected}
                     disabled={selectedAlert.is_resolved || isResolving}
-                    className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(16,185,129,0.2)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <CheckCircle2 size={16} />
                     {selectedAlert.is_resolved ? 'Đã xử lý' : isResolving ? 'Đang cập nhật...' : 'Xác nhận xử lý'}
@@ -379,7 +380,7 @@ export default function EventsHistoryPage() {
 
                   <button
                     type="button"
-                    className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-danger/40 bg-danger/10 px-3 text-sm font-semibold text-danger"
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-3 text-sm font-semibold text-rose-200"
                   >
                     <AlertTriangle size={16} />
                     Cảnh báo mức cao

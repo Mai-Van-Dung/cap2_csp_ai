@@ -15,7 +15,7 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-from db_connector import execute_query
+from db_connector import execute_query, fetch_one
 
 # Load environment variables
 BASE_DIR = os.path.dirname(__file__)
@@ -171,6 +171,9 @@ api_call_lock = threading.Lock()
 gemini_backoff_until = 0.0
 _alert_event_callback = None
 _alert_dispatch_pool = ThreadPoolExecutor(max_workers=4)
+_supervised_status_cache = {}
+_supervised_cache_lock = threading.Lock()
+SUPERVISED_CACHE_TTL_SECONDS = float(os.getenv("SUPERVISED_CACHE_TTL_SECONDS", "2"))
 
 
 def set_alert_event_callback(callback):
@@ -267,6 +270,36 @@ def _dispatch_external_alert(base_urls, payload):
     if last_error is not None:
         logger.error(f"Failed to send alert notification: {last_error}")
     return False
+
+
+def checkSupervisedStatus(camera_id, force_refresh=False):
+    """Return supervised swimming mode for a camera_id (True=enabled, False=normal)."""
+    now_ts = time.time()
+    camera_key = int(camera_id)
+
+    if not force_refresh:
+        with _supervised_cache_lock:
+            cached = _supervised_status_cache.get(camera_key)
+            if cached and cached.get("expires_at", 0) > now_ts:
+                return bool(cached.get("value"))
+
+    try:
+        row = fetch_one(
+            "SELECT supervised_mode FROM ai_settings WHERE camera_id = %s",
+            (camera_key,),
+        )
+        status = bool((row or {}).get("supervised_mode", 0))
+    except Exception as error:
+        logger.warning(f"Failed to read supervised_mode for camera {camera_key}: {error}")
+        status = False
+
+    with _supervised_cache_lock:
+        _supervised_status_cache[camera_key] = {
+            "value": status,
+            "expires_at": now_ts + SUPERVISED_CACHE_TTL_SECONDS,
+        }
+
+    return status
 
 
 def encode_image_to_base64(image_path):
@@ -414,6 +447,14 @@ def notify_alert(camera_id, zone_id, image_path, person_id, is_child):
         logger.info(f"Skipping alert for person {person_id} - classified as ADULT")
         return
 
+    if checkSupervisedStatus(camera_id):
+        logger.info(
+            "Supervised mode enabled for camera %s: suppress child alert for person %s",
+            camera_id,
+            person_id,
+        )
+        return
+
     existing_person = person_tracker.get_person(person_id) or {}
     last_alert_zone = existing_person.get("last_alert_zone_id")
     last_alert_age = existing_person.get("last_alert_ts", 0.0)
@@ -505,6 +546,15 @@ def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zon
     # Stage 2: Zone_B - Emergency alert if child
     elif current_stage == "zone_b":
         person_data = person_tracker.get_person(person_id)
+
+        if checkSupervisedStatus(camera_id):
+            logger.info(
+                "Supervised mode enabled for camera %s: skip Zone_B escalation for person %s",
+                camera_id,
+                person_id,
+            )
+            person_tracker.cleanup()
+            return
         
         if person_data:
             is_child = person_data.get("is_child")

@@ -27,7 +27,7 @@ _ZONE_B_HINTS = ("zone_b", "zone-b", "zone b", "danger", "dangerous", "inner", "
 PERSON_MATCH_MAX_DIST = float(os.getenv("PERSON_MATCH_MAX_DIST", "0.10"))
 PERSON_MATCH_MAX_FRAME_GAP = int(os.getenv("PERSON_MATCH_MAX_FRAME_GAP", "20"))
 STAGE_A_SNAPSHOT_COOLDOWN = float(os.getenv("STAGE_A_SNAPSHOT_COOLDOWN", "3"))
-STAGE_B_SNAPSHOT_COOLDOWN = float(os.getenv("STAGE_B_SNAPSHOT_COOLDOWN", "3"))
+STAGE_B_SNAPSHOT_COOLDOWN = float(os.getenv("STAGE_B_SNAPSHOT_COOLDOWN", "8"))
 
 # Frame tracking for person detection
 _person_frame_history = {}  # {person_hash: {frame_count, last_seen, position}}
@@ -97,13 +97,19 @@ def _match_existing_person_id(cx, cy):
 def _allow_stage_snapshot(camera_id, stage_key, person_id=None):
     now_ts = datetime.now().timestamp()
     cooldown = STAGE_A_SNAPSHOT_COOLDOWN if stage_key == "zone_a" else STAGE_B_SNAPSHOT_COOLDOWN
-    key = f"{camera_id}:{stage_key}:{person_id or 'global'}"
-    last_ts = _stage_snapshot_cooldowns.get(key, 0.0)
+    keys = [f"{camera_id}:{stage_key}:{person_id or 'global'}"]
 
-    if now_ts - last_ts < cooldown:
-        return False
+    if stage_key == "zone_b":
+        keys.insert(0, f"{camera_id}:{stage_key}:global")
 
-    _stage_snapshot_cooldowns[key] = now_ts
+    for key in keys:
+        last_ts = _stage_snapshot_cooldowns.get(key, 0.0)
+        if now_ts - last_ts < cooldown:
+            return False
+
+    for key in keys:
+        _stage_snapshot_cooldowns[key] = now_ts
+
     return True
 
 
@@ -309,6 +315,14 @@ def process_detection(frame, camera_id, bbox, zones_by_id, frame_width, frame_he
         elif zone_role == ZONE_B_ID:
             if zone_entered:
                 logger.warning(f"🔴 STAGE 2 - {_get_zone_name(zone_id)}: Person {person_id} escalated")
+
+            if alert_service.checkSupervisedStatus(camera_id):
+                logger.info(
+                    "Supervised mode enabled for camera %s: skip Zone_B snapshot/alert for person %s",
+                    camera_id,
+                    person_id,
+                )
+                continue
 
             if not _allow_stage_snapshot(camera_id, "zone_b", person_id=person_id):
                 continue

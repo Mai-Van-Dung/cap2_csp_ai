@@ -998,6 +998,83 @@ def resolve_alert(alert_id):
             "message": f"Error resolving alert: {str(e)}",
         }), 500
 
+
+@app.route("/api/camera/toggle-supervised", methods=["POST"])
+def toggle_supervised_mode():
+    """Toggle supervised swimming mode for a camera."""
+    try:
+        data = request.get_json(silent=True) or {}
+        camera_id_raw = data.get("camera_id")
+        enabled_raw = data.get("enabled")
+
+        if camera_id_raw is None:
+            return jsonify({
+                "status": "error",
+                "message": "camera_id is required",
+            }), 400
+
+        if enabled_raw is None:
+            return jsonify({
+                "status": "error",
+                "message": "enabled is required",
+            }), 400
+
+        try:
+            camera_id = int(camera_id_raw)
+        except (TypeError, ValueError):
+            return jsonify({
+                "status": "error",
+                "message": "camera_id must be an integer",
+            }), 400
+
+        enabled_int = None
+        if isinstance(enabled_raw, bool):
+            enabled_int = 1 if enabled_raw else 0
+        elif isinstance(enabled_raw, (int, float)) and int(enabled_raw) in (0, 1):
+            enabled_int = int(enabled_raw)
+        elif isinstance(enabled_raw, str):
+            normalized = enabled_raw.strip().lower()
+            if normalized in ("1", "true", "yes", "on"):
+                enabled_int = 1
+            elif normalized in ("0", "false", "no", "off"):
+                enabled_int = 0
+
+        if enabled_int is None:
+            return jsonify({
+                "status": "error",
+                "message": "enabled must be a boolean",
+            }), 400
+
+        camera_exists = fetch_one("SELECT id FROM cameras WHERE id = %s", (camera_id,))
+        if not camera_exists:
+            return jsonify({
+                "status": "error",
+                "message": f"Camera {camera_id} not found",
+            }), 404
+
+        execute_query(
+            """
+            INSERT INTO ai_settings (camera_id, supervised_mode)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE supervised_mode = VALUES(supervised_mode)
+            """,
+            (camera_id, enabled_int),
+        )
+
+        current_status = alert_service.checkSupervisedStatus(camera_id, force_refresh=True)
+        return jsonify({
+            "status": "success",
+            "message": "Supervised swimming mode updated successfully",
+            "camera_id": camera_id,
+            "supervised_mode": bool(current_status),
+        }), 200
+    except Exception as e:
+        logging.error("Error toggling supervised mode: %s", e)
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to toggle supervised mode: {str(e)}",
+        }), 500
+
 if __name__ == "__main__":
     host = os.getenv("FLASK_SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("FLASK_SERVER_PORT", "5000"))
