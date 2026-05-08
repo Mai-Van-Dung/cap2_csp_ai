@@ -330,7 +330,7 @@ def _persist_alert(frame, camera_id, zone_id, person_type="UNKNOWN", age=None, c
 def _notify_telegram(camera_id, zone_id, image_path="", person_type="UNKNOWN", age=None, confidence=0.0):
     """Gọi Node backend để gửi Telegram notification"""
     node_url = os.getenv("ALERT_NOTIFY_URL", os.getenv("NODE_BACKEND_URL", "http://127.0.0.1:5000"))
-    secret   = os.getenv("INTERNAL_SECRET", "mot_chuoi_bi_mat_bat_ky_vd_abc123xyz")
+    secret   = os.getenv("INTERNAL_SECRET", "your_internal_secret")
     try:
         # ✅ Tạo object_type rõ ràng với tuổi (nếu có)
         object_type = person_type

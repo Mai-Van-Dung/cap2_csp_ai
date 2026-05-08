@@ -174,6 +174,9 @@ _alert_dispatch_pool = ThreadPoolExecutor(max_workers=4)
 _supervised_status_cache = {}
 _supervised_cache_lock = threading.Lock()
 SUPERVISED_CACHE_TTL_SECONDS = float(os.getenv("SUPERVISED_CACHE_TTL_SECONDS", "2"))
+_zone_b_first_seen = {}
+_zone_b_last_alert_ts = {}
+_zone_state_lock = threading.Lock()
 
 
 def set_alert_event_callback(callback):
@@ -465,6 +468,14 @@ def notify_alert(camera_id, zone_id, image_path, person_id, is_child):
         logger.debug(f"Skipping duplicate alert for person {person_id} in zone {zone_id}")
         return
 
+    with _zone_state_lock:
+        zone_key = f"{int(camera_id)}:{zone_id}"
+        last_zone_alert_ts = _zone_b_last_alert_ts.get(zone_key, 0.0)
+        if now_ts - last_zone_alert_ts < 30:
+            logger.debug(f"Skipping duplicate alert for camera-zone {zone_key}")
+            return
+        _zone_b_last_alert_ts[zone_key] = now_ts
+
     relay_image_path, relay_image_url = _normalize_alert_image_paths(image_path)
 
     # Always keep local audit trail/realtime feed active even if external notifier fails.
@@ -546,6 +557,7 @@ def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zon
     # Stage 2: Zone_B - Emergency alert if child
     elif current_stage == "zone_b":
         person_data = person_tracker.get_person(person_id)
+        zone_key = f"{int(camera_id)}:{zone_id}"
 
         if checkSupervisedStatus(camera_id):
             logger.info(
@@ -555,32 +567,41 @@ def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zon
             )
             person_tracker.cleanup()
             return
+
+        with _zone_state_lock:
+            zone_first_seen = _zone_b_first_seen.get(zone_key)
+            if zone_first_seen is None:
+                _zone_b_first_seen[zone_key] = time.time()
+                zone_first_seen = _zone_b_first_seen[zone_key]
+
+        if person_data is None:
+            person_data = {}
         
-        if person_data:
-            is_child = person_data.get("is_child")
-            alert_sent = person_data.get("alert_sent")
-            
-            if is_child is None:
-                now_ts = time.time()
-                first_seen_ts = person_data.get("zone_b_first_seen")
-                if first_seen_ts is None:
-                    person_data["zone_b_first_seen"] = now_ts
-                    logger.warning(f"⚠️ Stage 2 - Zone_B: Waiting classification for person {person_id}")
-                    return
+        is_child = person_data.get("is_child")
+        alert_sent = person_data.get("alert_sent")
 
-                if now_ts - first_seen_ts < ZONE_B_CLASSIFICATION_WAIT_SECONDS:
-                    logger.warning(f"⚠️ Stage 2 - Zone_B: Grace wait ({now_ts - first_seen_ts:.1f}s) for person {person_id}")
-                    return
+        if is_child is None:
+            now_ts = time.time()
+            if now_ts - zone_first_seen < ZONE_B_CLASSIFICATION_WAIT_SECONDS:
+                logger.warning(
+                    f"⚠️ Stage 2 - Zone_B: Grace wait ({now_ts - zone_first_seen:.1f}s) for camera-zone {zone_key}, person {person_id}"
+                )
+                return
 
-                # Classification still not available after grace period -> safe fallback
-                logger.warning(f"⚠️ Stage 2 - Zone_B: Classification timeout for person {person_id}, assuming CHILD (safe)")
-                is_child = True
-            
-            if is_child and not alert_sent:
-                logger.warning(f"🔴 Stage 2 - Zone_B: CHILD INTRUSION - Person {person_id} entered dangerous zone!")
-                notify_alert(camera_id, zone_id, image_path, person_id, is_child=True)
-            elif not is_child:
-                logger.info(f"✅ Stage 2 - Zone_B: Adult (person {person_id}) - no alert needed")
+            # Classification is still unavailable after the grace period.
+            # Safety-first fallback: treat Zone_B as CHILD even if person_id changes frame-to-frame.
+            logger.warning(
+                f"⚠️ Stage 2 - Zone_B: Classification timeout for camera-zone {zone_key}, assuming CHILD (safe)"
+            )
+            is_child = True
+
+        if is_child and not alert_sent:
+            logger.warning(f"🔴 Stage 2 - Zone_B: CHILD INTRUSION - Person {person_id} entered dangerous zone!")
+            notify_alert(camera_id, zone_id, image_path, person_id, is_child=True)
+            with _zone_state_lock:
+                _zone_b_first_seen.pop(zone_key, None)
+        elif not is_child:
+            logger.info(f"✅ Stage 2 - Zone_B: Adult (person {person_id}) - no alert needed")
     
     # Periodic cleanup
     person_tracker.cleanup()

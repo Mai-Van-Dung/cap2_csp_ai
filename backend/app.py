@@ -66,7 +66,15 @@ allowed_origins = [
     if origin.strip()
 ]
 CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=True,
+    engineio_logger=True,
+    ping_timeout=120,
+    ping_interval=25
+)
 
 
 def _detect_local_ipv4_candidates():
