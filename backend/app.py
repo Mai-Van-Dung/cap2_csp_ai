@@ -59,13 +59,32 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
 )
-# Cho phép Frontend React truy cập
-allowed_origins = [
-    origin.strip()
-    for origin in os.getenv("CORS_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173").split(",")
-    if origin.strip()
-]
-CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
+# Cho phép Frontend React/React Native Web truy cập API khi chạy khác origin.
+cors_origin_env = os.getenv(
+    "CORS_ORIGIN",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:8081,http://127.0.0.1:8081,http://localhost:19006,http://127.0.0.1:19006",
+).strip()
+
+if cors_origin_env == "*":
+    allowed_origins = "*"
+else:
+    allowed_origins = [
+        origin.strip()
+        for origin in cors_origin_env.split(",")
+        if origin.strip()
+    ]
+
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": allowed_origins,
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        }
+    },
+    supports_credentials=True,
+)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -877,6 +896,7 @@ def delete_zone(zone_id, camera_id):
 
 
 @app.route("/api/alerts", methods=["GET"])
+@app.route("/alerts", methods=["GET"])
 def get_alerts_history():
     """Fetch persisted alert history for Events History page."""
     try:
