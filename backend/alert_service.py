@@ -529,6 +529,54 @@ def notify_alert(camera_id, zone_id, image_path, person_id, is_child):
         person_tracker.mark_person_alert_sent(person_id)
 
 
+def notify_camera_disconnect(camera_id, reason="", camera_name=None):
+    """Send camera disconnect alert to external relay (Telegram/User app project)."""
+    try:
+        preferred_notify_url = os.getenv("ALERT_NOTIFY_URL", "").strip()
+        fallback_notify_url = os.getenv("NODE_BACKEND_URL", "http://localhost:5003").strip()
+        secret = os.getenv("INTERNAL_SECRET", "")
+
+        notify_candidates = []
+        if preferred_notify_url:
+            notify_candidates.append(preferred_notify_url)
+        if fallback_notify_url and fallback_notify_url not in notify_candidates:
+            notify_candidates.append(fallback_notify_url)
+
+        if not notify_candidates:
+            raise RuntimeError("No ALERT_NOTIFY_URL/NODE_BACKEND_URL configured")
+
+        if not secret:
+            logger.warning("INTERNAL_SECRET is empty; external project may reject camera disconnect payload")
+
+        camera_label = camera_name or f"Camera {camera_id}"
+        reason_text = str(reason or "Lost camera frame, reconnecting...").strip()
+        message = f"🚨 CAMERA DISCONNECTED: {camera_label}. Reason: {reason_text}"
+
+        payload = {
+            "object_type": "CAMERA_OFFLINE",
+            "camera_name": camera_label,
+            "confidence": 1.0,
+            "image_path": None,
+            "image_url": None,
+            "image_urls": [],
+            "secret": secret,
+            "message": message,
+            "source": "python-backend-camera-health",
+            "event_type": "camera_disconnect",
+            "camera_id": int(camera_id),
+            "status": "offline",
+            "reason": reason_text,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+
+        _alert_dispatch_pool.submit(_dispatch_external_alert, notify_candidates, payload)
+        logger.warning("📢 Camera disconnect alert dispatched for camera=%s", camera_id)
+        return True
+    except Exception as error:
+        logger.error("Failed to dispatch camera disconnect alert for camera %s: %s", camera_id, error)
+        return False
+
+
 
 def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zone_name, current_stage):
     """

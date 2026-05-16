@@ -86,6 +86,23 @@ stream_status = {
     "source": "test_video" if USE_TEST_VIDEO else "rtsp",
 }
 
+CAMERA_DISCONNECT_ALERT_ENABLED = os.getenv(
+    "CAMERA_DISCONNECT_ALERT_ENABLED",
+    "false" if USE_TEST_VIDEO else "true",
+).strip().lower() in ("1", "true", "yes", "on")
+CAMERA_ONLINE_STABLE_SECONDS = float(os.getenv("CAMERA_ONLINE_STABLE_SECONDS", "20"))
+CAMERA_DISCONNECT_ALERT_COOLDOWN_SECONDS = float(
+    os.getenv("CAMERA_DISCONNECT_ALERT_COOLDOWN_SECONDS", "180")
+)
+
+_connection_state_lock = threading.Lock()
+_connection_state = {
+    "stable_online_since": None,
+    "was_stable_online": False,
+    "offline_since": None,
+    "last_disconnect_alert_ts": 0.0,
+}
+
 _frame_lock = threading.Lock()
 _raw_frame = None
 _processed_frame = None
@@ -99,6 +116,55 @@ _camera_id = 1  # Default camera ID, can be configured via environment or API
 _last_alert_ts = {}
 _test_video_frame_interval = 0.0
 _alert_event_callback = None
+
+
+def _mark_camera_connected():
+    """Track online stability so we only alert when camera drops after normal operation."""
+    now_ts = time.time()
+    with _connection_state_lock:
+        if _connection_state["stable_online_since"] is None:
+            _connection_state["stable_online_since"] = now_ts
+
+        if now_ts - _connection_state["stable_online_since"] >= CAMERA_ONLINE_STABLE_SECONDS:
+            _connection_state["was_stable_online"] = True
+
+        _connection_state["offline_since"] = None
+
+
+def _handle_camera_disconnected(app_logger, reason):
+    """Emit one offline alert per outage window (with cooldown) after camera was stable online."""
+    stream_status["connected"] = False
+    stream_status["last_error"] = str(reason or "Lost camera frame, reconnecting...")
+
+    if not CAMERA_DISCONNECT_ALERT_ENABLED:
+        return
+
+    now_ts = time.time()
+    should_notify = False
+
+    with _connection_state_lock:
+        if _connection_state["offline_since"] is None:
+            _connection_state["offline_since"] = now_ts
+
+        cooldown_ok = (
+            now_ts - float(_connection_state["last_disconnect_alert_ts"])
+            >= CAMERA_DISCONNECT_ALERT_COOLDOWN_SECONDS
+        )
+
+        if _connection_state["was_stable_online"] and cooldown_ok:
+            should_notify = True
+            _connection_state["last_disconnect_alert_ts"] = now_ts
+            # Require the camera to become stable again before next disconnect alert.
+            _connection_state["was_stable_online"] = False
+            _connection_state["stable_online_since"] = None
+
+    if should_notify:
+        app_logger.warning("Camera connection lost after stable run. Dispatching Telegram alert...")
+        alert_service.notify_camera_disconnect(
+            camera_id=_camera_id,
+            reason=stream_status["last_error"],
+            camera_name=f"Camera {_camera_id}",
+        )
 
 
 def set_alert_event_callback(callback):
@@ -589,13 +655,13 @@ def open_capture(app_logger):
         cap = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
-            stream_status["connected"] = False
-            stream_status["last_error"] = f"Cannot open test video: {video_path}"
+            _handle_camera_disconnected(app_logger, f"Cannot open test video: {video_path}")
             return None
 
         stream_status["connected"] = True
         stream_status["last_error"] = ""
         stream_status["active_path"] = video_path
+        _mark_camera_connected()
 
         source_fps = TEST_VIDEO_FORCE_FPS if TEST_VIDEO_FORCE_FPS > 0 else cap.get(cv2.CAP_PROP_FPS)
         if source_fps and source_fps > 0:
@@ -631,11 +697,11 @@ def open_capture(app_logger):
                 stream_status["connected"] = True
                 stream_status["last_error"] = ""
                 stream_status["active_path"] = path
+                _mark_camera_connected()
                 app_logger.info(f"Camera connected via {path} (backend={backend})")
                 return cap
 
-        stream_status["connected"] = False
-        stream_status["last_error"] = "Cannot open RTSP stream (check IP/user/pass/path)"
+        _handle_camera_disconnected(app_logger, "Cannot open RTSP stream (check IP/user/pass/path)")
         return None
 
 
@@ -658,18 +724,21 @@ def _capture_worker(app_logger):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ok, frame = cap.read()
                 if not ok:
-                    stream_status["connected"] = False
-                    stream_status["last_error"] = "Cannot read test video frame, retrying..."
+                    _handle_camera_disconnected(app_logger, "Cannot read test video frame, retrying...")
                     cap.release()
                     cap = None
                     time.sleep(1)
                     continue
             else:
-                stream_status["connected"] = False
-                stream_status["last_error"] = "Lost camera frame, reconnecting..."
+                _handle_camera_disconnected(app_logger, "Lost camera frame, reconnecting...")
                 cap.release()
                 cap = None
                 continue
+
+        if stream_status.get("connected") is not True:
+            stream_status["connected"] = True
+            stream_status["last_error"] = ""
+        _mark_camera_connected()
 
         frame = cv2.resize(frame, OUTPUT_SIZE)
         with _frame_lock:
