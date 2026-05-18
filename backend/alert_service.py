@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Gemini API Configuration
 try:
-    import google.generativeai as genai
+    from google import genai
     GEMINI_AVAILABLE = True
     logger.info("✅ google-generativeai loaded successfully")
 except ImportError:
@@ -41,8 +41,9 @@ MAX_GEMINI_CALLS_PER_MINUTE = int(os.getenv("MAX_GEMINI_CALLS_PER_MINUTE", "15")
 ZONE_B_CLASSIFICATION_WAIT_SECONDS = float(os.getenv("ZONE_B_CLASSIFICATION_WAIT_SECONDS", "3"))
 
 # Initialize Gemini API
+GEMINI_CLIENT = None
 if GEMINI_AVAILABLE and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY)
     logger.info(f"✅ Gemini API configured with model: {GEMINI_MODEL}")
 else:
     GEMINI_AVAILABLE = False
@@ -96,6 +97,8 @@ class PersonTracker:
                 self.persons[person_id] = {
                     "bbox": bbox,
                     "is_child": None,  # Will be set by Gemini after stage 1
+                    "heuristic_is_child": None,
+                    "heuristic_confidence": 0.0,
                     "timestamp": time.time(),
                     "stage": stage,
                     "gemini_called": False,
@@ -108,6 +111,13 @@ class PersonTracker:
             else:
                 self.persons[person_id]["bbox"] = bbox
                 self.persons[person_id]["stage"] = stage
+
+    def update_person_local_classification(self, person_id, is_child, confidence):
+        with self.lock:
+            if person_id in self.persons:
+                self.persons[person_id]["heuristic_is_child"] = bool(is_child)
+                self.persons[person_id]["heuristic_confidence"] = float(confidence)
+                self.persons[person_id]["timestamp"] = time.time()
 
     def mark_person_classification_pending(self, person_id):
         with self.lock:
@@ -323,7 +333,7 @@ def analyze_person_with_gemini(image_path, person_id):
     """
     global last_api_call_time, gemini_backoff_until
     
-    if not GEMINI_AVAILABLE:
+    if not GEMINI_AVAILABLE or GEMINI_CLIENT is None:
         logger.warning(f"Gemini not available for person {person_id}, assuming CHILD (safe mode)")
         return True, 0.5  # Fallback: assume child for safety
 
@@ -354,11 +364,8 @@ def analyze_person_with_gemini(image_path, person_id):
         
         # Upload image to Gemini
         logger.info(f"📤 Uploading snapshot for person {person_id} to Gemini...")
-        file = genai.upload_file(image_path)
+        file = GEMINI_CLIENT.files.upload(file=image_path)
         logger.info(f"✅ File uploaded successfully: {file.uri}")
-        
-        # Create model instance
-        model = genai.GenerativeModel(GEMINI_MODEL)
         
         # Prepare prompt
         prompt = """Hãy phân tích hình ảnh này. Đối tượng là trẻ em (child) hay người lớn (adult)? 
@@ -367,7 +374,10 @@ def analyze_person_with_gemini(image_path, person_id):
         
         # Call Gemini API
         logger.info(f"🔍 Analyzing image for person {person_id}...")
-        response = model.generate_content([prompt, file])
+        response = GEMINI_CLIENT.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[prompt, file],
+        )
         
         rate_limiter.record_call()
         
@@ -626,7 +636,18 @@ def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zon
             person_data = {}
         
         is_child = person_data.get("is_child")
+        heuristic_is_child = person_data.get("heuristic_is_child")
+        heuristic_confidence = float(person_data.get("heuristic_confidence") or 0.0)
         alert_sent = person_data.get("alert_sent")
+
+        if is_child is None and heuristic_is_child is not None and heuristic_confidence >= 0.78:
+            is_child = bool(heuristic_is_child)
+            logger.info(
+                "Stage 2 - Zone_B: using local classifier for person %s -> %s (conf=%.2f)",
+                person_id,
+                "CHILD" if is_child else "ADULT",
+                heuristic_confidence,
+            )
 
         if is_child is None:
             now_ts = time.time()
@@ -660,11 +681,23 @@ def get_person_classification(person_id):
     if person_data:
         return {
             "is_child": person_data.get("is_child"),
+            "heuristic_is_child": person_data.get("heuristic_is_child"),
+            "heuristic_confidence": person_data.get("heuristic_confidence"),
             "gemini_called": person_data.get("gemini_called"),
             "stage": person_data.get("stage"),
             "alert_sent": person_data.get("alert_sent"),
         }
     return None
+
+
+def set_person_local_classification(person_id, person_type, confidence):
+    if not person_id:
+        return
+    person_tracker.update_person_local_classification(
+        person_id,
+        str(person_type).upper() == "CHILD",
+        float(confidence),
+    )
 
 
 def get_rate_limit_status():

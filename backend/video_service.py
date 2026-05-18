@@ -28,6 +28,8 @@ PERSON_MATCH_MAX_DIST = float(os.getenv("PERSON_MATCH_MAX_DIST", "0.10"))
 PERSON_MATCH_MAX_FRAME_GAP = int(os.getenv("PERSON_MATCH_MAX_FRAME_GAP", "20"))
 STAGE_A_SNAPSHOT_COOLDOWN = float(os.getenv("STAGE_A_SNAPSHOT_COOLDOWN", "3"))
 STAGE_B_SNAPSHOT_COOLDOWN = float(os.getenv("STAGE_B_SNAPSHOT_COOLDOWN", "8"))
+ONLY_ALERT_WHEN_SINGLE_PERSON = os.getenv("ONLY_ALERT_WHEN_SINGLE_PERSON", "true").strip().lower() in ("1", "true", "yes", "on")
+ACTIVE_ZONE_COUNT_MAX_FRAME_AGE = int(os.getenv("ACTIVE_ZONE_COUNT_MAX_FRAME_AGE", "3"))
 
 # Frame tracking for person detection
 _person_frame_history = {}  # {person_hash: {frame_count, last_seen, position}}
@@ -92,6 +94,35 @@ def _match_existing_person_id(cx, cy):
             best_id = pid
 
     return best_id
+
+
+def get_tracked_person_id(bbox, frame_width, frame_height):
+    """
+    Resolve the current tracked person ID for a bbox without mutating tracking state.
+    Returns None if no matching tracked person exists yet.
+    """
+    if _tracking_lock is None:
+        return None
+
+    cx, cy = _bbox_center_normalized(bbox, frame_width, frame_height)
+    with _tracking_lock:
+        return _match_existing_person_id(cx, cy)
+
+
+def _count_recent_persons_in_zone(zone_id):
+    if _tracking_lock is None:
+        return 0
+
+    count = 0
+    now_frame = _frame_counter
+    with _tracking_lock:
+        for data in _person_frame_history.values():
+            if now_frame - int(data.get("last_seen", -9999)) > ACTIVE_ZONE_COUNT_MAX_FRAME_AGE:
+                continue
+            if data.get("active_zone_roles", {}).get(zone_id):
+                count += 1
+
+    return count
 
 
 def _allow_stage_snapshot(camera_id, stage_key, person_id=None):
@@ -283,6 +314,8 @@ def process_detection(frame, camera_id, bbox, zones_by_id, frame_width, frame_he
                 person_data["zones_entered"][zone_id] = {
                     "frame": _frame_counter,
                     "alert_sent": False,
+                    "zone_a_snapshot_sent": False,
+                    "zone_b_snapshot_sent": False,
                 }
 
         # TWO-STAGE LOGIC (processed while person remains inside zone, not only on first enter)
@@ -297,11 +330,20 @@ def process_detection(frame, camera_id, bbox, zones_by_id, frame_width, frame_he
             if person_state.get("gemini_called"):
                 continue
 
+            with _tracking_lock:
+                zone_state = (_person_frame_history.get(person_id, {}).get("zones_entered", {}).get(zone_id) or {})
+                if zone_state.get("zone_a_snapshot_sent"):
+                    continue
+
             if not _allow_stage_snapshot(camera_id, "zone_a", person_id=person_id):
                 continue
 
             snapshot_path = _save_snapshot(person_crop, camera_id, zone_id, person_id)
             if snapshot_path:
+                with _tracking_lock:
+                    tracked = _person_frame_history.get(person_id, {}).get("zones_entered", {}).get(zone_id)
+                    if tracked is not None:
+                        tracked["zone_a_snapshot_sent"] = True
                 alert_service.process_two_stage_alert(
                     camera_id=camera_id,
                     person_id=person_id,
@@ -324,11 +366,31 @@ def process_detection(frame, camera_id, bbox, zones_by_id, frame_width, frame_he
                 )
                 continue
 
+            if ONLY_ALERT_WHEN_SINGLE_PERSON:
+                persons_in_zone = _count_recent_persons_in_zone(zone_id)
+                if persons_in_zone != 1:
+                    logger.info(
+                        "Zone_B alert suppressed for person %s in zone %s because persons_in_zone=%s",
+                        person_id,
+                        zone_id,
+                        persons_in_zone,
+                    )
+                    continue
+
+            with _tracking_lock:
+                zone_state = (_person_frame_history.get(person_id, {}).get("zones_entered", {}).get(zone_id) or {})
+                if zone_state.get("zone_b_snapshot_sent"):
+                    continue
+
             if not _allow_stage_snapshot(camera_id, "zone_b", person_id=person_id):
                 continue
 
             snapshot_path = _save_snapshot(person_crop, camera_id, zone_id, person_id)
             if snapshot_path:
+                with _tracking_lock:
+                    tracked = _person_frame_history.get(person_id, {}).get("zones_entered", {}).get(zone_id)
+                    if tracked is not None:
+                        tracked["zone_b_snapshot_sent"] = True
                 alert_service.process_two_stage_alert(
                     camera_id=camera_id,
                     person_id=person_id,

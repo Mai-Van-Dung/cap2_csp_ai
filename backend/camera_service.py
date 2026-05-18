@@ -57,9 +57,13 @@ TEST_VIDEO_PATH = os.getenv(
 )
 TEST_VIDEO_FORCE_FPS = float(os.getenv("TEST_VIDEO_FORCE_FPS", "0"))
 
-OUTPUT_SIZE = (1280, 720)
-TARGET_FPS = 15
-JPEG_QUALITY = 80
+OUTPUT_WIDTH = int(os.getenv("OUTPUT_WIDTH", "960"))
+OUTPUT_HEIGHT = int(os.getenv("OUTPUT_HEIGHT", "540"))
+OUTPUT_SIZE = (OUTPUT_WIDTH, OUTPUT_HEIGHT)
+TARGET_FPS = int(os.getenv("TARGET_FPS", "12"))
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "65"))
+INFERENCE_EVERY_N_FRAMES = max(1, int(os.getenv("INFERENCE_EVERY_N_FRAMES", "2")))
+CLASSIFICATION_REFRESH_FRAMES = max(1, int(os.getenv("CLASSIFICATION_REFRESH_FRAMES", "10")))
 
 # --- YOLO config ---
 MODEL_PATH = "yolov8n.pt"
@@ -116,6 +120,11 @@ _camera_id = 1  # Default camera ID, can be configured via environment or API
 _last_alert_ts = {}
 _test_video_frame_interval = 0.0
 _alert_event_callback = None
+_classification_lock = threading.Lock()
+_classification_history = {}
+_CLASSIFICATION_DECAY = float(os.getenv("CLASSIFICATION_DECAY", "0.82"))
+_MIN_STABLE_CLASSIFICATION_FRAMES = int(os.getenv("MIN_STABLE_CLASSIFICATION_FRAMES", "4"))
+_MAX_CLASSIFICATION_IDLE_SECONDS = float(os.getenv("MAX_CLASSIFICATION_IDLE_SECONDS", "12"))
 
 
 def _mark_camera_connected():
@@ -239,6 +248,260 @@ def _detect_faces_in_bbox(frame, bbox, expand_ratio=None):
         return []
 
 
+def _estimate_face_metrics(frame, bbox, expand_ratio=None):
+    """
+    Estimate face-to-body proportions for child/adult discrimination.
+    Returns None when no face can be detected reliably.
+    """
+    if FACE_CASCADE is None:
+        return None
+
+    if expand_ratio is None:
+        expand_ratio = FACE_EXPAND_RATIO
+
+    try:
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(frame.shape[1] - 1, x2)
+        y2 = min(frame.shape[0] - 1, y2)
+
+        body_w = max(1, x2 - x1)
+        body_h = max(1, y2 - y1)
+        exp_x = int(body_w * (expand_ratio - 1) / 2)
+        exp_y = int(body_h * (expand_ratio - 1) / 2)
+
+        x1_exp = max(0, x1 - exp_x)
+        y1_exp = max(0, y1 - exp_y)
+        x2_exp = min(frame.shape[1] - 1, x2 + exp_x)
+        y2_exp = min(frame.shape[0] - 1, y2 + exp_y)
+
+        roi = frame[y1_exp:y2_exp, x1_exp:x2_exp]
+        if roi.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        faces = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(CASCADE_MIN_FACE_SIZE, CASCADE_MIN_FACE_SIZE),
+            maxSize=(roi.shape[1], roi.shape[0]),
+        )
+
+        if len(faces) == 0:
+            return None
+
+        x_f, y_f, w_f, h_f = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+        face_region = roi[y_f:y_f + h_f, x_f:x_f + w_f]
+        if face_region.size == 0:
+            return None
+
+        face_height_ratio = h_f / float(body_h)
+        face_width_ratio = w_f / float(body_w)
+        face_area_ratio = (w_f * h_f) / float(body_w * body_h)
+
+        return {
+            "face_region": face_region,
+            "face_height_ratio": face_height_ratio,
+            "face_width_ratio": face_width_ratio,
+            "face_area_ratio": face_area_ratio,
+        }
+    except Exception as e:
+        logging.debug(f"Face metrics error: {e}")
+        return None
+
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_classifier_thresholds(frame_height, zone_settings=None):
+    """
+    Derive size thresholds from the current camera/zone instead of relying only on global constants.
+    """
+    extreme = CHILD_HEIGHT_THRESHOLD_EXTREME
+    very_small = CHILD_HEIGHT_THRESHOLD_VERY_SMALL
+    small = CHILD_HEIGHT_THRESHOLD_SMALL
+    sensitivity = 0.75
+
+    if zone_settings:
+        sensitivity = _safe_float(zone_settings.get("sensitivity"), sensitivity)
+        min_child_height_px = _safe_float(zone_settings.get("min_child_height"), 0.0)
+
+        if frame_height > 0 and min_child_height_px > 0:
+            calibrated_small = _clamp(min_child_height_px / float(frame_height), 0.16, 0.42)
+            small = _clamp((small * 0.45) + (calibrated_small * 0.55), 0.18, 0.45)
+            very_small = _clamp(small * 0.80, 0.14, small - 0.02)
+            extreme = _clamp(very_small * 0.76, 0.10, very_small - 0.02)
+
+    sensitivity_bias = _clamp((sensitivity - 0.75) * 0.10, -0.04, 0.05)
+    small = _clamp(small + sensitivity_bias, 0.18, 0.48)
+    very_small = _clamp(very_small + sensitivity_bias * 0.75, 0.14, small - 0.02)
+    extreme = _clamp(extreme + sensitivity_bias * 0.55, 0.10, very_small - 0.02)
+
+    return {
+        "extreme": extreme,
+        "very_small": very_small,
+        "small": small,
+        "sensitivity": sensitivity,
+    }
+
+
+def _expected_adult_height_ratio_for_foot(foot_y_ratio):
+    """
+    Approximate expected adult bbox height for a fixed pool camera based on
+    where the person's feet land in the image. Lower in the frame means closer
+    to the camera, so adults should appear taller there.
+    """
+    foot_y_ratio = _clamp(float(foot_y_ratio), 0.0, 1.0)
+    return 0.16 + 0.54 * (foot_y_ratio ** 1.65)
+
+
+def _cleanup_classification_history(now_ts=None):
+    if now_ts is None:
+        now_ts = time.time()
+
+    with _classification_lock:
+        expired_ids = [
+            person_id
+            for person_id, state in _classification_history.items()
+            if now_ts - state.get("last_seen_ts", now_ts) > _MAX_CLASSIFICATION_IDLE_SECONDS
+        ]
+        for person_id in expired_ids:
+            del _classification_history[person_id]
+
+
+def _get_cached_instant_classification(person_id, frame_index):
+    if not person_id:
+        return None
+
+    with _classification_lock:
+        state = _classification_history.get(person_id)
+        if not state:
+            return None
+
+        cached = state.get("cached_instant_result")
+        cached_frame = int(state.get("cached_instant_frame", -9999))
+        if cached and frame_index - cached_frame < CLASSIFICATION_REFRESH_FRAMES:
+            return cached
+
+    return None
+
+
+def _store_cached_instant_classification(person_id, frame_index, result):
+    if not person_id:
+        return
+
+    with _classification_lock:
+        state = _classification_history.get(person_id)
+        if state is None:
+            state = {
+                "child_votes": 0.0,
+                "adult_votes": 0.0,
+                "frames_seen": 0,
+                "stable_label": result[0],
+                "stable_confidence": float(result[2]),
+                "best_age": result[1],
+                "best_age_confidence": float(result[2] if result[1] is not None else 0.0),
+                "last_seen_ts": time.time(),
+            }
+            _classification_history[person_id] = state
+
+        state["cached_instant_result"] = result
+        state["cached_instant_frame"] = int(frame_index)
+
+
+def _update_temporal_classification(person_id, instant_type, instant_age, instant_confidence, details):
+    """
+    Smooth per-frame predictions across the same tracked person to reduce label flicker.
+    """
+    if not person_id:
+        return instant_type, instant_age, instant_confidence
+
+    now_ts = time.time()
+    gemini_state = alert_service.get_person_classification(person_id) or {}
+
+    with _classification_lock:
+        state = _classification_history.get(person_id)
+        if state is None:
+            state = {
+                "child_votes": 0.0,
+                "adult_votes": 0.0,
+                "frames_seen": 0,
+                "stable_label": instant_type,
+                "stable_confidence": float(instant_confidence),
+                "best_age": instant_age,
+                "best_age_confidence": float(instant_confidence if instant_age is not None else 0.0),
+                "last_seen_ts": now_ts,
+            }
+            _classification_history[person_id] = state
+
+        state["child_votes"] *= _CLASSIFICATION_DECAY
+        state["adult_votes"] *= _CLASSIFICATION_DECAY
+        state["frames_seen"] += 1
+        state["last_seen_ts"] = now_ts
+
+        vote_weight = _clamp(float(instant_confidence), 0.35, 1.15)
+        if details.get("deepface_age") is not None:
+            vote_weight += 0.18
+        if details.get("height_ratio", 1.0) < details.get("small_threshold", CHILD_HEIGHT_THRESHOLD_SMALL):
+            vote_weight += 0.08
+
+        if instant_type == "CHILD":
+            state["child_votes"] += vote_weight
+        else:
+            state["adult_votes"] += vote_weight
+
+        if instant_age is not None and float(instant_confidence) >= state.get("best_age_confidence", 0.0):
+            state["best_age"] = instant_age
+            state["best_age_confidence"] = float(instant_confidence)
+
+        gemini_called = bool(gemini_state.get("gemini_called"))
+        gemini_is_child = gemini_state.get("is_child")
+        if gemini_called and gemini_is_child is not None:
+            if gemini_is_child:
+                state["child_votes"] += 1.35
+            else:
+                state["adult_votes"] += 1.35
+
+        score_gap = abs(state["child_votes"] - state["adult_votes"])
+        total_votes = max(0.01, state["child_votes"] + state["adult_votes"])
+        enough_history = state["frames_seen"] >= _MIN_STABLE_CLASSIFICATION_FRAMES
+
+        if gemini_called and gemini_is_child is not None and enough_history:
+            stable_label = "CHILD" if gemini_is_child else "ADULT"
+        elif enough_history and score_gap >= 0.55:
+            stable_label = "CHILD" if state["child_votes"] >= state["adult_votes"] else "ADULT"
+        else:
+            stable_label = state.get("stable_label", instant_type)
+
+        stable_confidence = _clamp(0.52 + (score_gap / total_votes) * 0.38, 0.52, 0.97)
+
+        if gemini_called and gemini_is_child is not None:
+            stable_confidence = max(stable_confidence, 0.84)
+
+        if not enough_history:
+            stable_label = instant_type
+            stable_confidence = max(stable_confidence * 0.85, float(instant_confidence))
+
+        state["stable_label"] = stable_label
+        state["stable_confidence"] = stable_confidence
+
+        smoothed_age = state.get("best_age")
+        if stable_label == "ADULT" and smoothed_age is not None and smoothed_age < 18:
+            smoothed_age = None
+
+        return stable_label, smoothed_age, stable_confidence
+
+
 def _preprocess_image_for_deepface(img):
     """
     Preprocess image for better DeepFace accuracy.
@@ -327,6 +590,8 @@ def _prepare_zone_polygons(zones, frame_shape):
             "name": zone.get("zone_name", zone.get("id", "Unknown Zone")),
             "polygon_pixels": polygon_pixels,
             "top_point": top_point,
+            "min_child_height": zone.get("min_child_height"),
+            "sensitivity": zone.get("sensitivity"),
         })
 
     return prepared
@@ -626,6 +891,348 @@ def classify_person_age(frame, bbox):
     
     return person_type, detected_age, confidence
 
+def classify_person_age_v2(frame, bbox, zone_settings=None):
+    """
+    Updated classifier that keeps the original signal sources but calibrates size thresholds
+    per zone and exposes metadata for temporal smoothing.
+    """
+    x1, y1, x2, y2 = bbox
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame.shape[1] - 1, x2)
+    y2 = min(frame.shape[0] - 1, y2)
+
+    crop_height = max(1, y2 - y1)
+    crop_width = max(1, x2 - x1)
+    frame_height = frame.shape[0]
+    frame_width = frame.shape[1]
+
+    height_ratio = crop_height / max(1, frame_height)
+    area_ratio = (crop_width * crop_height) / max(1, (frame_width * frame_height))
+    width_ratio = crop_width / max(1, frame_width)
+    aspect_ratio = crop_width / max(1, crop_height)
+    foot_y_ratio = y2 / max(1, frame_height)
+    thresholds = _resolve_classifier_thresholds(frame_height, zone_settings)
+
+    extreme_threshold = thresholds["extreme"]
+    very_small_threshold = thresholds["very_small"]
+    small_threshold = thresholds["small"]
+
+    detected_age = None
+    deepface_age = None
+    deepface_confidence = 0.0
+    deepface_source = None
+    person_type = "ADULT"
+    confidence = 0.5
+
+    face_metrics = _estimate_face_metrics(frame, (x1, y1, x2, y2))
+    if face_metrics:
+        deepface_age, deepface_confidence = _get_deepface_age(face_metrics["face_region"])
+        if deepface_age is not None:
+            deepface_source = "face"
+    elif height_ratio > 0.15:
+        body_crop = frame[y1:y2, x1:x2].copy()
+        if body_crop.size > 0:
+            deepface_age, deepface_confidence = _get_deepface_age(body_crop)
+            if deepface_age is not None:
+                deepface_source = "body"
+
+    child_score = 0.0
+    adult_score = 0.0
+    expected_adult_height_ratio = _expected_adult_height_ratio_for_foot(foot_y_ratio)
+    relative_height_ratio = height_ratio / max(0.01, expected_adult_height_ratio)
+
+    if height_ratio < extreme_threshold:
+        child_score += 3.5
+    elif height_ratio < very_small_threshold:
+        child_score += 2.5
+    elif height_ratio < small_threshold:
+        child_score += 1.5
+    elif height_ratio < 0.40:
+        child_score += 0.5
+    elif height_ratio >= 0.55:
+        adult_score += 1.5
+
+    # Perspective-aware height check: compare against an adult's expected apparent
+    # size at the same foot position in the frame.
+    if relative_height_ratio < 0.62:
+        child_score += 2.2
+    elif relative_height_ratio < 0.74:
+        child_score += 1.4
+    elif relative_height_ratio < 0.86:
+        child_score += 0.6
+    elif relative_height_ratio > 1.08:
+        adult_score += 0.9
+    elif relative_height_ratio > 0.96:
+        adult_score += 0.3
+
+    if area_ratio < 0.015:
+        child_score += 1.0
+    elif area_ratio < 0.025:
+        child_score += 0.5
+    elif area_ratio > 0.30:
+        adult_score += 1.2
+    elif area_ratio > 0.20:
+        adult_score += 0.5
+
+    if 0.35 < aspect_ratio < 0.55:
+        if height_ratio < small_threshold:
+            child_score += 0.3
+        elif height_ratio > 0.50:
+            adult_score += 0.2
+
+    # A larger head-to-body ratio is a strong child cue, especially in close-camera pool scenes.
+    if face_metrics:
+        face_height_ratio = face_metrics["face_height_ratio"]
+        face_area_ratio = face_metrics["face_area_ratio"]
+
+        if face_height_ratio >= 0.25:
+            child_score += 1.4
+        elif face_height_ratio >= 0.18:
+            child_score += 0.8
+        elif face_height_ratio <= 0.16 and height_ratio >= 0.45:
+            adult_score += 0.5
+
+        if face_area_ratio >= 0.050:
+            child_score += 0.6
+
+        # Strong child prototype from body/face proportions.
+        if (
+            face_height_ratio >= 0.18
+            and aspect_ratio < 0.50
+            and area_ratio < 0.12
+        ):
+            child_score += 1.8
+            adult_score = max(0.0, adult_score - 0.3)
+
+    # Strong child prototype for this fixed pool camera:
+    # lower-frame foot position + relatively short expected adult-normalized height
+    # + narrow body shape should bias heavily toward CHILD.
+    if (
+        foot_y_ratio >= 0.70
+        and relative_height_ratio < 0.98
+        and aspect_ratio < 0.46
+    ):
+        child_score += 1.9
+        adult_score = max(0.0, adult_score - 0.25)
+
+    if (
+        foot_y_ratio >= 0.74
+        and relative_height_ratio < 0.90
+    ):
+        child_score += 1.2
+
+    # Narrow body width is a strong cue for children in this fixed camera.
+    if width_ratio < 0.12 and aspect_ratio < 0.40:
+        child_score += 1.1
+    elif width_ratio < 0.145 and foot_y_ratio >= 0.68 and aspect_ratio < 0.42:
+        child_score += 0.7
+
+    # Hard child prototype: close to camera, still narrow, and not visually tall enough
+    # for an adult at the same foot position.
+    if (
+        foot_y_ratio >= 0.72
+        and width_ratio < 0.125
+        and aspect_ratio < 0.40
+        and relative_height_ratio < 1.02
+        and area_ratio < 0.11
+    ):
+        child_score += 2.1
+        adult_score = max(0.0, adult_score - 0.5)
+
+    # Prevent a near-camera child with a tall bbox from being pushed to ADULT too early.
+    if height_ratio >= 0.50 and aspect_ratio < 0.40 and deepface_age is None:
+        child_score += 0.7
+        adult_score = max(0.0, adult_score - 0.4)
+
+    physical_is_child = child_score > adult_score
+    child_margin = child_score - adult_score
+
+    deepface_adult_reliable = True
+    if deepface_age is not None and deepface_age >= 18:
+        face_height_ratio = face_metrics["face_height_ratio"] if face_metrics else None
+        face_area_ratio = face_metrics["face_area_ratio"] if face_metrics else None
+
+        if deepface_source != "face":
+            deepface_adult_reliable = False
+        if face_height_ratio is not None and face_height_ratio >= 0.18:
+            deepface_adult_reliable = False
+        if face_area_ratio is not None and face_area_ratio >= 0.045:
+            deepface_adult_reliable = False
+        if physical_is_child and child_margin >= 0.65:
+            deepface_adult_reliable = False
+        if height_ratio < max(small_threshold + 0.03, 0.34):
+            deepface_adult_reliable = False
+        if child_score >= 2.2:
+            deepface_adult_reliable = False
+        if foot_y_ratio >= 0.70 and relative_height_ratio < 0.98:
+            deepface_adult_reliable = False
+
+    if (
+        face_metrics
+        and face_metrics["face_height_ratio"] >= 0.18
+        and aspect_ratio < 0.50
+        and area_ratio < 0.12
+        and child_score >= adult_score
+    ):
+        person_type = "CHILD"
+        detected_age = deepface_age if deepface_age is not None and deepface_age < 18 else None
+        confidence = 0.91
+        details = {
+            "height_ratio": height_ratio,
+            "area_ratio": area_ratio,
+            "aspect_ratio": aspect_ratio,
+            "foot_y_ratio": foot_y_ratio,
+            "expected_adult_height_ratio": expected_adult_height_ratio,
+            "relative_height_ratio": relative_height_ratio,
+            "deepface_age": deepface_age,
+            "deepface_confidence": deepface_confidence,
+            "deepface_source": deepface_source,
+            "face_height_ratio": face_metrics["face_height_ratio"] if face_metrics else None,
+            "face_area_ratio": face_metrics["face_area_ratio"] if face_metrics else None,
+            "child_score": child_score,
+            "adult_score": adult_score,
+            "child_margin": child_margin,
+            "deepface_adult_reliable": False,
+            "small_threshold": small_threshold,
+            "very_small_threshold": very_small_threshold,
+            "extreme_threshold": extreme_threshold,
+        }
+        return person_type, detected_age, confidence, details
+
+    if height_ratio < extreme_threshold:
+        person_type = "CHILD"
+        confidence = 0.92
+    elif height_ratio < very_small_threshold:
+        person_type = "CHILD"
+        detected_age = deepface_age if deepface_age is not None and deepface_age < 18 else None
+        confidence = 0.88
+    elif deepface_age is not None and deepface_confidence >= DEEPFACE_CONFIDENCE_THRESHOLD:
+        if deepface_age < 18:
+            person_type = "CHILD"
+            detected_age = deepface_age
+            confidence = 0.94
+        elif not deepface_adult_reliable:
+            if physical_is_child:
+                person_type = "CHILD"
+                detected_age = None
+                confidence = max(0.79, min(0.9, 0.72 + child_margin * 0.08))
+            else:
+                person_type = "ADULT"
+                detected_age = None
+                confidence = 0.60
+        elif height_ratio < small_threshold and physical_is_child and height_ratio < very_small_threshold:
+            person_type = "CHILD"
+            confidence = 0.80
+        else:
+            person_type = "ADULT"
+            detected_age = deepface_age
+            confidence = 0.91
+    elif very_small_threshold <= height_ratio < 0.40:
+        if physical_is_child and child_score >= 2.0:
+            person_type = "CHILD"
+            detected_age = deepface_age if deepface_age is not None and deepface_age < 18 else None
+            confidence = 0.78 if deepface_age is not None else 0.72
+        elif adult_score >= 1.5:
+            person_type = "ADULT"
+            detected_age = deepface_age
+            confidence = 0.75
+    elif deepface_age is not None:
+        if deepface_age >= 18 and not deepface_adult_reliable:
+            person_type = "CHILD"
+            detected_age = None
+            confidence = 0.76 if child_score >= 1.8 else 0.66
+        else:
+            person_type = "CHILD" if deepface_age < 18 else "ADULT"
+            detected_age = deepface_age if deepface_source == "face" or deepface_age < 18 else None
+            confidence = 0.82 if deepface_source == "face" else 0.68
+    else:
+        person_type = "CHILD" if physical_is_child else "ADULT"
+        confidence = 0.68 if physical_is_child else 0.65
+
+    if (
+        person_type == "ADULT"
+        and deepface_age is None
+        and foot_y_ratio >= 0.72
+        and width_ratio < 0.125
+        and aspect_ratio < 0.40
+        and relative_height_ratio < 1.02
+    ):
+        person_type = "CHILD"
+        detected_age = None
+        confidence = max(confidence, 0.82)
+
+    details = {
+        "height_ratio": height_ratio,
+        "area_ratio": area_ratio,
+        "width_ratio": width_ratio,
+        "aspect_ratio": aspect_ratio,
+        "foot_y_ratio": foot_y_ratio,
+        "expected_adult_height_ratio": expected_adult_height_ratio,
+        "relative_height_ratio": relative_height_ratio,
+        "deepface_age": deepface_age,
+        "deepface_confidence": deepface_confidence,
+        "deepface_source": deepface_source,
+        "face_height_ratio": face_metrics["face_height_ratio"] if face_metrics else None,
+        "face_area_ratio": face_metrics["face_area_ratio"] if face_metrics else None,
+        "child_score": child_score,
+        "adult_score": adult_score,
+        "child_margin": child_margin,
+        "deepface_adult_reliable": deepface_adult_reliable,
+        "small_threshold": small_threshold,
+        "very_small_threshold": very_small_threshold,
+        "extreme_threshold": extreme_threshold,
+    }
+
+    return person_type, detected_age, confidence, details
+
+
+def _draw_person_annotations(frame, detections, intrusion_detected=False):
+    for det in detections:
+        x1, y1, x2, y2 = det["bbox"]
+        box_color = det["box_color"]
+        label = det["label"]
+        person_type = det["person_type"]
+        hit_zone_name = det.get("hit_zone_name")
+
+        cx = float(x1 + x2) / 2.0
+        cy = float(y2)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+        cv2.circle(frame, (int(cx), int(cy)), 4, box_color, -1)
+        cv2.putText(
+            frame,
+            label,
+            (x1, max(20, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            box_color,
+            2,
+        )
+
+        if hit_zone_name:
+            cv2.putText(
+                frame,
+                f"ZONE: {hit_zone_name} ({person_type})",
+                (x1, min(frame.shape[0] - 10, y2 + 18)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 255),
+                1,
+            )
+
+    if intrusion_detected:
+        cv2.putText(
+            frame,
+            "WARNING: INTRUSION DETECTED",
+            (20, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2,
+        )
+
 
 def build_rtsp_url(path: str) -> str:
     user = quote(CAM_USER, safe="")
@@ -772,11 +1379,13 @@ def _infer_worker(app_logger):
     app_logger.info(f"Initial zone load: {len(zones)} zones")
     
     last_id = -1
+    infer_cycle = 0
+    last_visual_detections = []
+    last_intrusion_detected = False
     load_zones_interval = 300  # Reload zones every 5 minutes (300 seconds)
     last_zones_load = time.time()
     
     while True:
-        # Periodically reload zones from database
         current_time = time.time()
         if current_time - last_zones_load > load_zones_interval:
             zones = load_zones_from_db(_camera_id)
@@ -795,13 +1404,7 @@ def _infer_worker(app_logger):
             continue
 
         try:
-            results = model.predict(
-                source=frame,
-                conf=CONF_THRES,
-                classes=[PERSON_CLASS_ID],
-                verbose=False
-            )
-
+            infer_cycle += 1
             processed = frame.copy()
             prepared_zones = _prepare_zone_polygons(zones, processed.shape)
 
@@ -813,11 +1416,28 @@ def _infer_worker(app_logger):
             if zones_by_id:
                 video_service.draw_zone_visualization(processed, zones_by_id)
 
-            intrusion_detected = False
-            yolo_result = results[0]
-            boxes = yolo_result.boxes
+            should_run_inference = (
+                infer_cycle == 1
+                or infer_cycle % INFERENCE_EVERY_N_FRAMES == 0
+                or not last_visual_detections
+            )
 
-            if boxes is not None and len(boxes) > 0:
+            if should_run_inference:
+                results = model.predict(
+                    source=frame,
+                    conf=CONF_THRES,
+                    classes=[PERSON_CLASS_ID],
+                    verbose=False
+                )
+
+                intrusion_detected = False
+                visual_detections = []
+                yolo_result = results[0]
+                boxes = yolo_result.boxes
+            else:
+                boxes = None
+
+            if should_run_inference and boxes is not None and len(boxes) > 0:
                 xyxy = boxes.xyxy.cpu().numpy()
                 confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.array([0.0] * len(xyxy))
                 analysis_frame = frame.copy()
@@ -846,8 +1466,6 @@ def _infer_worker(app_logger):
                     # ========================================
 
                     # ✅ Phân loại tuổi: CHILD vs ADULT
-                    person_type, age, age_conf = classify_person_age(analysis_frame, (x1, y1, x2, y2))
-                    
                     # Foot-point for intrusion logic.
                     cx = float(x1 + x2) / 2.0
                     cy = float(y2)
@@ -860,6 +1478,29 @@ def _infer_worker(app_logger):
                             break
 
                     is_intruding = hit_zone is not None
+                    person_id = video_service.get_tracked_person_id(
+                        (x1, y1, x2, y2),
+                        processed.shape[1],
+                        processed.shape[0],
+                    )
+                    cached_result = _get_cached_instant_classification(person_id, infer_cycle)
+                    if cached_result is None:
+                        cached_result = classify_person_age_v2(
+                            analysis_frame,
+                            (x1, y1, x2, y2),
+                            zone_settings=hit_zone,
+                        )
+                        _store_cached_instant_classification(person_id, infer_cycle, cached_result)
+
+                    instant_type, instant_age, instant_conf, classify_details = cached_result
+                    person_type, age, age_conf = _update_temporal_classification(
+                        person_id,
+                        instant_type,
+                        instant_age,
+                        instant_conf,
+                        classify_details,
+                    )
+                    alert_service.set_person_local_classification(person_id, person_type, age_conf)
                     
                     # ✅ Color khác nhau cho CHILD (đỏ) vs ADULT (xanh)
                     if person_type == "CHILD":
@@ -885,42 +1526,28 @@ def _infer_worker(app_logger):
                     else:
                         label = f"{label_prefix} {confs[idx]:.2f}{label_suffix}"
 
-                    cv2.rectangle(processed, (x1, y1), (x2, y2), box_color, 2)
-                    cv2.circle(processed, (int(cx), int(cy)), 4, box_color, -1)
-                    cv2.putText(
-                        processed,
-                        label,
-                        (x1, max(20, y1 - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        box_color,
-                        2,
+                    visual_detections.append(
+                        {
+                            "bbox": (x1, y1, x2, y2),
+                            "box_color": box_color,
+                            "label": label,
+                            "person_type": person_type,
+                            "hit_zone_name": hit_zone["name"] if is_intruding else None,
+                        }
                     )
 
-                    if is_intruding:
-                        cv2.putText(
-                            processed,
-                            f"ZONE: {hit_zone['name']} ({person_type})",
-                            (x1, min(processed.shape[0] - 10, y2 + 18)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 0, 255),
-                            1,
-                        )
-
             # Increment frame counter for video service
-            video_service.increment_frame_counter()
+            if should_run_inference:
+                last_visual_detections = visual_detections
+                last_intrusion_detected = intrusion_detected
+                video_service.increment_frame_counter()
+                _cleanup_classification_history()
 
-            if intrusion_detected:
-                cv2.putText(
-                    processed,
-                    "⚠️ WARNING: INTRUSION DETECTED",
-                    (20, 36),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 0, 255),
-                    2,
-                )
+            _draw_person_annotations(
+                processed,
+                last_visual_detections,
+                intrusion_detected=last_intrusion_detected,
+            )
 
             with _frame_lock:
                 _processed_frame = processed
