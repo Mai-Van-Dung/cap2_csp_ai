@@ -39,6 +39,8 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_COOLDOWN = int(os.getenv("GEMINI_API_COOLDOWN", "4"))  # Seconds between API calls
 MAX_GEMINI_CALLS_PER_MINUTE = int(os.getenv("MAX_GEMINI_CALLS_PER_MINUTE", "15"))
 ZONE_B_CLASSIFICATION_WAIT_SECONDS = float(os.getenv("ZONE_B_CLASSIFICATION_WAIT_SECONDS", "3"))
+ZONE_B_CHILD_ALERT_CONFIDENCE = float(os.getenv("ZONE_B_CHILD_ALERT_CONFIDENCE", "0.78"))
+ZONE_B_ADULT_SUPPRESS_CONFIDENCE = float(os.getenv("ZONE_B_ADULT_SUPPRESS_CONFIDENCE", "0.68"))
 
 # Initialize Gemini API
 GEMINI_CLIENT = None
@@ -640,14 +642,21 @@ def process_two_stage_alert(camera_id, person_id, zone_id, bbox, image_path, zon
         heuristic_confidence = float(person_data.get("heuristic_confidence") or 0.0)
         alert_sent = person_data.get("alert_sent")
 
-        if is_child is None and heuristic_is_child is not None and heuristic_confidence >= 0.78:
-            is_child = bool(heuristic_is_child)
-            logger.info(
-                "Stage 2 - Zone_B: using local classifier for person %s -> %s (conf=%.2f)",
-                person_id,
-                "CHILD" if is_child else "ADULT",
-                heuristic_confidence,
-            )
+        if is_child is None and heuristic_is_child is not None:
+            if heuristic_is_child and heuristic_confidence >= ZONE_B_CHILD_ALERT_CONFIDENCE:
+                is_child = True
+                logger.info(
+                    "Stage 2 - Zone_B: using local classifier for person %s -> CHILD (conf=%.2f)",
+                    person_id,
+                    heuristic_confidence,
+                )
+            elif (not heuristic_is_child) and heuristic_confidence >= ZONE_B_ADULT_SUPPRESS_CONFIDENCE:
+                is_child = False
+                logger.info(
+                    "Stage 2 - Zone_B: suppressing alert from local ADULT classification for person %s (conf=%.2f)",
+                    person_id,
+                    heuristic_confidence,
+                )
 
         if is_child is None:
             now_ts = time.time()

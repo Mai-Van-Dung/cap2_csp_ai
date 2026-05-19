@@ -71,6 +71,7 @@ CONF_THRES = float(os.getenv("YOLO_CONF_THRES", "0.45"))  # Slightly lower to ca
 PERSON_CLASS_ID = 0
 ALERT_COOLDOWN_SECONDS = float(os.getenv("ALERT_COOLDOWN_SECONDS", "10"))
 ALERT_DIR = os.path.join(os.path.dirname(__file__), "static", "alerts")
+MANUAL_SNAPSHOT_DIR = os.path.join(os.path.dirname(__file__), "static", "manual_snapshots")
 
 # --- Age Detection Optimization params ---
 # Pool-specific thresholds (can be overridden via environment)
@@ -1574,6 +1575,39 @@ def _placeholder_frame(text: str):
     img = np.zeros((OUTPUT_SIZE[1], OUTPUT_SIZE[0], 3), dtype=np.uint8)
     cv2.putText(img, text, (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     return img
+
+
+def capture_manual_snapshot(camera_id=1, mode="processed"):
+    snapshot_mode = str(mode or "processed").strip().lower()
+    if snapshot_mode not in ("processed", "raw"):
+        raise ValueError("mode must be 'processed' or 'raw'")
+
+    with _frame_lock:
+        if snapshot_mode == "processed" and _processed_frame is not None:
+            frame = _processed_frame.copy()
+        elif _raw_frame is not None:
+            frame = _raw_frame.copy()
+        else:
+            frame = None
+
+    if frame is None:
+        raise RuntimeError("No camera frame available")
+
+    os.makedirs(MANUAL_SNAPSHOT_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"manual_snapshot_cam{int(camera_id)}_{snapshot_mode}_{stamp}.jpg"
+    abs_path = os.path.join(MANUAL_SNAPSHOT_DIR, filename)
+    rel_path = os.path.join("static", "manual_snapshots", filename).replace("\\", "/")
+
+    if not cv2.imwrite(abs_path, frame):
+        raise RuntimeError(f"Failed to save snapshot to {abs_path}")
+
+    return {
+        "mode": snapshot_mode,
+        "filename": filename,
+        "absolute_path": abs_path,
+        "relative_path": rel_path,
+    }
 
 
 def gen_frames(app_logger):

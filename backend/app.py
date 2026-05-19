@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import socket
 import logging
+import requests
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from flask import Flask, Response, jsonify, request, session
@@ -239,6 +240,23 @@ def _load_user_identity(user_id):
         return None
 
 
+def _load_user_telegram_chat_id(user_id):
+    try:
+        row = fetch_one(
+            """
+            SELECT telegram_chat_id
+            FROM users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+        chat_id = (row or {}).get("telegram_chat_id")
+        return str(chat_id).strip() if chat_id else None
+    except Exception as error:
+        logging.error("Error loading telegram_chat_id for user %s: %s", user_id, error)
+        return None
+
+
 def _load_default_admin_identity():
     try:
         return fetch_one(
@@ -289,6 +307,67 @@ def _load_camera_profile(camera_id):
     except Exception as error:
         logging.error("Error loading camera profile %s: %s", camera_id, error)
         return None
+
+
+def _is_truthy(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_snapshot_telegram_chat_id(data):
+    direct_chat_id = str((data or {}).get("telegram_chat_id") or "").strip()
+    if direct_chat_id:
+        return direct_chat_id
+
+    identity = _get_authenticated_identity() or {}
+    user_id = identity.get("user_id") or identity.get("id")
+    if user_id:
+        chat_id = _load_user_telegram_chat_id(user_id)
+        if chat_id:
+            return chat_id
+
+    fallback_chat_id = str(os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    return fallback_chat_id or None
+
+
+def _send_snapshot_to_telegram(image_abs_path, chat_id, caption):
+    bot_token = str(os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
+    if not bot_token:
+        return {
+            "sent": False,
+            "reason": "telegram_bot_token_missing",
+        }
+
+    if not chat_id:
+        return {
+            "sent": False,
+            "reason": "telegram_chat_id_missing",
+        }
+
+    api_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    with open(image_abs_path, "rb") as photo_file:
+        response = requests.post(
+            api_url,
+            data={
+                "chat_id": str(chat_id),
+                "caption": caption,
+            },
+            files={
+                "photo": photo_file,
+            },
+            timeout=(5, 20),
+        )
+
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram API returned ok=false: {payload}")
+
+    return {
+        "sent": True,
+        "chat_id": str(chat_id),
+    }
 
 
 def _sync_camera_profile(camera_id, camera_data):
@@ -563,6 +642,80 @@ def connection_info():
             "handshake_url": f"{preferred_base}/socket.io/?EIO=4&transport=polling",
         },
     }), 200
+
+
+@app.route("/api/cameras/<int:camera_id>/snapshot", methods=["POST"])
+def capture_camera_snapshot(camera_id):
+    """Capture a manual snapshot from the latest camera frame."""
+    data = request.get_json(silent=True) or {}
+    mode = (request.args.get("mode") or data.get("mode") or "processed").strip().lower()
+    send_telegram = _is_truthy(request.args.get("send_telegram", data.get("send_telegram")), default=True)
+
+    try:
+        snapshot = cs.capture_manual_snapshot(camera_id=camera_id, mode=mode)
+        host_root = request.host_url.rstrip("/")
+        relative_path = snapshot["relative_path"].lstrip("/")
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        image_urls = []
+
+        if public_base_url:
+            image_urls.append(f"{public_base_url}/{relative_path}")
+        image_urls.append(f"{host_root}/{relative_path}")
+
+        telegram_result = {
+            "sent": False,
+            "reason": "disabled",
+        }
+        if send_telegram:
+            camera_label = f"Camera {camera_id}"
+            chat_id = _resolve_snapshot_telegram_chat_id(data)
+            caption = (
+                f"Manual snapshot from {camera_label}\n"
+                f"Mode: {snapshot['mode']}\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            try:
+                telegram_result = _send_snapshot_to_telegram(
+                    snapshot["absolute_path"],
+                    chat_id,
+                    caption,
+                )
+            except Exception as error:
+                logging.error("Failed to send manual snapshot to Telegram: %s", error)
+                telegram_result = {
+                    "sent": False,
+                    "reason": str(error),
+                }
+
+        return jsonify({
+            "status": "success",
+            "camera_id": camera_id,
+            "snapshot": {
+                "mode": snapshot["mode"],
+                "filename": snapshot["filename"],
+                "image_path": snapshot["relative_path"],
+                "image_url": image_urls[0],
+                "image_urls": image_urls,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "telegram": telegram_result,
+        }), 200
+    except ValueError as error:
+        return jsonify({
+            "status": "error",
+            "message": str(error),
+        }), 400
+    except RuntimeError as error:
+        return jsonify({
+            "status": "error",
+            "message": str(error),
+        }), 503
+    except Exception as error:
+        logging.error("Manual snapshot failed for camera %s: %s", camera_id, error)
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to capture snapshot: {str(error)}",
+        }), 500
 
 
 @app.route("/api/auth/login", methods=["POST"])
